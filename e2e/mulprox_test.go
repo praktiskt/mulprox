@@ -3,11 +3,11 @@ package e2e
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"testing"
 	"time"
 
@@ -258,7 +258,7 @@ func TestSeedDeterminism(t *testing.T) {
 		t.Fatal("no mullvad servers found")
 	}
 
-	logger := slog.New(slog.NewTextHandler(os.Stderr, nil))
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	h := proxy.New(logger, 30*time.Second, p)
 
 	// Create test server

@@ -265,20 +265,16 @@ func (h *Handler) tunnel(clientConn, targetConn net.Conn) {
 	errc := make(chan error, 2)
 
 	go func() {
-		_, err := ioCopyBuffer(targetConn, clientConn, *buf)
+		_, err := io.CopyBuffer(targetConn, clientConn, *buf)
 		targetConn.Close()
 		errc <- err
 	}()
 
 	go func() {
-		_, err := ioCopyBuffer(clientConn, targetConn, *buf)
+		_, err := io.CopyBuffer(clientConn, targetConn, *buf)
 		clientConn.Close()
 		errc <- err
 	}()
 
 	<-errc
-}
-
-func ioCopyBuffer(dst io.Writer, src io.Reader, buf []byte) (int64, error) {
-	return io.CopyBuffer(dst, src, buf)
 }

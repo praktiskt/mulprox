@@ -2,7 +2,6 @@ package proxy
 
 import (
 	"encoding/json"
-	"net/http"
 	"testing"
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
@@ -85,63 +84,5 @@ func TestProxyAuthApply(t *testing.T) {
 	}
 	if !filter.Multihop {
 		t.Error("expected multihop to be true")
-	}
-}
-
-func TestGetSOCKS5AddrFromRequest(t *testing.T) {
-	t.Skip("requires network access to fetch Mullvad server list")
-	h := &Handler{}
-
-	tests := []struct {
-		name      string
-		authJSON  string
-		expectErr bool
-	}{
-		{
-			name:     "seed",
-			authJSON: `{"seed": 123}`,
-		},
-		{
-			name:     "country",
-			authJSON: `{"country": "Sweden"}`,
-		},
-		{
-			name:     "combined",
-			authJSON: `{"seed": 42, "country": "Sweden"}`,
-		},
-		{
-			name:      "invalid JSON",
-			authJSON:  `{invalid}`,
-			expectErr: true,
-		},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			req := &http.Request{
-				Header: http.Header{
-					"Proxy-Authorization": {tt.authJSON},
-				},
-			}
-
-			addr, err := h.getSOCKS5AddrFromRequest(req)
-
-			if tt.expectErr {
-				if err == nil {
-					t.Error("expected error, got nil")
-				}
-				return
-			}
-
-			if err != nil {
-				t.Fatalf("unexpected error: %v", err)
-			}
-
-			if addr == "" {
-				t.Error("expected non-empty address")
-			}
-
-			t.Logf("selected server: %s", addr)
-		})
 	}
 }
