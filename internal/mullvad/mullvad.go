@@ -170,6 +170,13 @@ func parseMullvadList(text string) []Server {
 	return servers
 }
 
+var multiWordCountries = map[string]string{
+	"New":   "New Zealand",
+	"South": "South Africa",
+	"Czech": "Czech Republic",
+	"Hong":  "Hong Kong",
+}
+
 func parseServerLine(line string) (Server, bool) {
 	fields := strings.Fields(line)
 
@@ -177,20 +184,31 @@ func parseServerLine(line string) (Server, bool) {
 		return Server{}, false
 	}
 
-	s := Server{
-		Flag:     fields[0],
-		Country:  fields[1],
-		City:     strings.Join(fields[2:len(fields)-9], " "),
-		SOCKS5:   fields[len(fields)-9],
-		IPv4:     fields[len(fields)-8],
-		IPv6:     fields[len(fields)-7],
-		Provider: fields[len(fields)-3],
-		Hostname: fields[len(fields)-1],
+	countryIdx := 1
+	if nextField, ok := multiWordCountries[fields[1]]; ok {
+		if fields[2] == strings.Fields(nextField)[1] {
+			countryIdx = 2
+		}
 	}
+
+	s := Server{
+		Flag:    fields[0],
+		Country: strings.Join(fields[1:countryIdx+1], " "),
+	}
+
+	cityStart := countryIdx + 1
+
+	s.SOCKS5 = fields[len(fields)-9]
+	s.IPv4 = fields[len(fields)-8]
+	s.IPv6 = fields[len(fields)-7]
+	s.Provider = fields[len(fields)-3]
+	s.Hostname = fields[len(fields)-1]
 
 	if !strings.Contains(s.SOCKS5, ".") {
 		return Server{}, false
 	}
+
+	s.City = strings.Join(fields[cityStart:len(fields)-9], " ")
 
 	fmt.Sscanf(fields[len(fields)-6], "%d", &s.Speed)
 	fmt.Sscanf(fields[len(fields)-5], "%d", &s.Multihop)
