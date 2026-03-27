@@ -2,15 +2,27 @@ package proxy
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
 	"golang.org/x/net/proxy"
+)
+
+const (
+	HeaderCountry  = "X-Mulprox-Country"
+	HeaderCity     = "X-Mulprox-City"
+	HeaderSeed     = "X-Mulprox-Seed"
+	HeaderOwned    = "X-Mulprox-Owned"
+	HeaderProvider = "X-Mulprox-Provider"
+	HeaderMinSpeed = "X-Mulprox-Speed"
+	HeaderMultihop = "X-Mulprox-Multihop"
 )
 
 type Handler struct {
@@ -36,6 +48,62 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	h.handleHTTP(w, r)
+}
+
+func (h *Handler) getSOCKS5AddrFromRequest(r *http.Request) (string, error) {
+	filter := mullvad.Filter{}
+
+	if v := r.Header.Get(HeaderCountry); v != "" {
+		filter.Country = v
+	}
+	if v := r.Header.Get(HeaderCity); v != "" {
+		filter.City = v
+	}
+	if v := r.Header.Get(HeaderSeed); v != "" {
+		seed, err := strconv.ParseInt(v, 10, 64)
+		if err != nil {
+			return "", fmt.Errorf("invalid seed: %w", err)
+		}
+		filter.Seed = seed
+	}
+	if v := r.Header.Get(HeaderOwned); v != "" {
+		owned := strings.ToLower(v) == "true"
+		filter.Owned = &owned
+	}
+	if v := r.Header.Get(HeaderProvider); v != "" {
+		filter.Provider = v
+	}
+	if v := r.Header.Get(HeaderMinSpeed); v != "" {
+		speed, err := strconv.Atoi(v)
+		if err != nil {
+			return "", fmt.Errorf("invalid speed: %w", err)
+		}
+		filter.MinSpeed = speed
+	}
+	if v := r.Header.Get(HeaderMultihop); v != "" {
+		filter.Multihop = strings.ToLower(v) == "true"
+	}
+
+	if filter.Country == "" && filter.City == "" && filter.Owned == nil &&
+		filter.Provider == "" && filter.MinSpeed == 0 && !filter.Multihop && filter.Seed == 0 {
+		return h.mullvad.RandomSOCKS5Addr()
+	}
+
+	server, err := h.mullvad.GetFilteredServer(filter)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s:%d", server.SOCKS5, server.SOCKSPort), nil
+}
+
+func (h *Handler) stripProxyHeaders(headers http.Header) http.Header {
+	prefix := "X-Mulprox-"
+	for key := range headers {
+		if strings.HasPrefix(key, prefix) {
+			headers.Del(key)
+		}
+	}
+	return headers
 }
 
 func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
@@ -66,7 +134,7 @@ func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) proxyRequestHTTP(ctx context.Context, w http.ResponseWriter, r *http.Request, targetURL string) {
-	socksAddr, err := h.mullvad.RandomSOCKS5Addr()
+	socksAddr, err := h.getSOCKS5AddrFromRequest(r)
 	if err != nil {
 		h.logger.Error("failed to get Mullvad server", slog.String("error", err.Error()))
 		http.Error(w, "failed to create proxy session", http.StatusServiceUnavailable)
@@ -93,7 +161,7 @@ func (h *Handler) proxyRequestHTTP(ctx context.Context, w http.ResponseWriter, r
 		http.Error(w, "failed to create request", http.StatusBadRequest)
 		return
 	}
-	req.Header = r.Header.Clone()
+	req.Header = h.stripProxyHeaders(r.Header.Clone())
 
 	resp, err := transport.RoundTrip(req)
 	if err != nil {
@@ -125,10 +193,14 @@ func (h *Handler) handleConnectHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-	defer cancel()
+	socksAddr, err := h.getSOCKS5AddrFromRequest(r)
+	if err != nil {
+		h.logger.Error("failed to get Mullvad server", slog.String("error", err.Error()))
+		http.Error(w, "failed to create proxy session", http.StatusServiceUnavailable)
+		return
+	}
 
-	dialer, err := h.mullvad.SOCKS5Dialer(ctx, h.timeout)
+	dialer, err := h.mullvad.SOCKS5DialerFromAddr(socksAddr, h.timeout)
 	if err != nil {
 		h.logger.Error("failed to create Mullvad session", slog.String("error", err.Error()))
 		http.Error(w, "failed to create proxy session", http.StatusServiceUnavailable)

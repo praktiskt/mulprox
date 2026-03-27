@@ -88,6 +88,10 @@ func (p *Provider) SOCKS5Dialer(ctx context.Context, timeout time.Duration) (pro
 		return nil, err
 	}
 
+	return p.SOCKS5DialerFromAddr(socksAddr, timeout)
+}
+
+func (p *Provider) SOCKS5DialerFromAddr(socksAddr string, timeout time.Duration) (proxy.Dialer, error) {
 	dialer, err := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
 	if err != nil {
 		return nil, err
@@ -108,6 +112,75 @@ func (p *Provider) RandomSOCKS5Addr() (string, error) {
 
 	s := mullvadServers[rand.Intn(len(mullvadServers))]
 	return fmt.Sprintf("%s:%d", s.SOCKS5, s.SOCKSPort), nil
+}
+
+type Filter struct {
+	Country  string
+	City     string
+	Owned    *bool
+	Provider string
+	MinSpeed int
+	Multihop bool
+	Seed     int64
+}
+
+func (p *Provider) GetFilteredServer(filter Filter) (Server, error) {
+	mullvadServers, err := p.FetchMullvadList(context.Background())
+	if err != nil {
+		return Server{}, err
+	}
+
+	if len(mullvadServers) == 0 {
+		return Server{}, fmt.Errorf("no servers available")
+	}
+
+	var filtered []Server
+	for _, s := range mullvadServers {
+		if filter.Country != "" && !strings.EqualFold(s.Country, filter.Country) {
+			continue
+		}
+		if filter.City != "" && !strings.EqualFold(s.City, filter.City) {
+			continue
+		}
+		if filter.Owned != nil && s.Owned != *filter.Owned {
+			continue
+		}
+		if filter.Provider != "" && !strings.EqualFold(s.Provider, filter.Provider) {
+			continue
+		}
+		if filter.MinSpeed > 0 && s.Speed < filter.MinSpeed {
+			continue
+		}
+		if filter.Multihop && s.Multihop == 0 {
+			continue
+		}
+		filtered = append(filtered, s)
+	}
+
+	if len(filtered) == 0 {
+		return Server{}, fmt.Errorf("no servers match filter")
+	}
+
+	if filter.Seed != 0 {
+		rng := rand.New(rand.NewSource(filter.Seed))
+		index := rng.Intn(len(filtered))
+		return filtered[index], nil
+	}
+
+	s := filtered[rand.Intn(len(filtered))]
+	return s, nil
+}
+
+func (p *Provider) GetServerBySeed(seed int64) (Server, error) {
+	return p.GetFilteredServer(Filter{Seed: seed})
+}
+
+func (p *Provider) GetServerByCountry(country string) (Server, error) {
+	return p.GetFilteredServer(Filter{Country: country})
+}
+
+func (p *Provider) GetServerByCountryAndSeed(country string, seed int64) (Server, error) {
+	return p.GetFilteredServer(Filter{Country: country, Seed: seed})
 }
 
 type timeoutDialer struct {
