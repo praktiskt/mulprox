@@ -10,6 +10,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/praktiskt/mulprox/internal/mullvad"
 	"github.com/praktiskt/mulprox/internal/proxy"
 
 	"github.com/spf13/cobra"
@@ -28,7 +29,8 @@ var serveCmd = &cobra.Command{
 			return fmt.Errorf("failed to get port flag: %w", err)
 		}
 
-		proxyHandler := proxy.New(logger, timeout)
+		mullvadProvider := mullvad.New()
+		proxyHandler := proxy.New(logger, timeout, mullvadProvider)
 
 		addr := fmt.Sprintf("%s:%d", host, port)
 		logger.Info("proxy server listening", slog.String("addr", addr))

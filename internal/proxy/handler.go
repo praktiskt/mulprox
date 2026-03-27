@@ -9,11 +9,25 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
 	"golang.org/x/net/proxy"
 )
+
+var transportPool = sync.Pool{
+	New: func() interface{} {
+		return &http.Transport{}
+	},
+}
+
+var bufferPool = sync.Pool{
+	New: func() interface{} {
+		buf := make([]byte, 32*1024)
+		return &buf
+	},
+}
 
 const (
 	HeaderCountry  = "X-Mulprox-Country"
@@ -31,12 +45,28 @@ type Handler struct {
 	mullvad *mullvad.Provider
 }
 
-func New(logger *slog.Logger, timeout time.Duration) *Handler {
+func New(logger *slog.Logger, timeout time.Duration, mullvad *mullvad.Provider) *Handler {
 	return &Handler{
 		logger:  logger,
 		timeout: timeout,
-		mullvad: mullvad.New(),
+		mullvad: mullvad,
 	}
+}
+
+func (h *Handler) getTransport(socksDialer proxy.Dialer) *http.Transport {
+	t := transportPool.Get().(*http.Transport)
+	t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return socksDialer.Dial(network, addr)
+	}
+	t.TLSHandshakeTimeout = h.timeout
+	t.DisableKeepAlives = false
+	t.MaxIdleConnsPerHost = 4
+	return t
+}
+
+func (h *Handler) putTransport(t *http.Transport) {
+	t.DialContext = nil
+	transportPool.Put(t)
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -106,6 +136,22 @@ func (h *Handler) stripProxyHeaders(headers http.Header) http.Header {
 	return headers
 }
 
+func (h *Handler) copyAndStripHeaders(dst, src http.Header) {
+	prefix := "X-Mulprox-"
+	for key, values := range src {
+		if strings.HasPrefix(key, prefix) {
+			continue
+		}
+		dst[key] = values
+	}
+}
+
+func (h *Handler) copyResponseBody(w http.ResponseWriter, body io.Reader) {
+	buf := bufferPool.Get().(*[]byte)
+	defer bufferPool.Put(buf)
+	io.CopyBuffer(w, body, *buf)
+}
+
 func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	targetURL := r.URL.String()
 
@@ -148,12 +194,8 @@ func (h *Handler) proxyRequestHTTP(ctx context.Context, w http.ResponseWriter, r
 		return
 	}
 
-	transport := &http.Transport{
-		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return socksDialer.Dial(network, addr)
-		},
-		TLSHandshakeTimeout: h.timeout,
-	}
+	transport := h.getTransport(socksDialer)
+	defer h.putTransport(transport)
 
 	req, err := http.NewRequestWithContext(ctx, r.Method, targetURL, r.Body)
 	if err != nil {
@@ -161,7 +203,7 @@ func (h *Handler) proxyRequestHTTP(ctx context.Context, w http.ResponseWriter, r
 		http.Error(w, "failed to create request", http.StatusBadRequest)
 		return
 	}
-	req.Header = h.stripProxyHeaders(r.Header.Clone())
+	h.copyAndStripHeaders(req.Header, r.Header)
 
 	resp, err := transport.RoundTrip(req)
 	if err != nil {
@@ -178,7 +220,7 @@ func (h *Handler) proxyRequestHTTP(ctx context.Context, w http.ResponseWriter, r
 	}
 
 	w.WriteHeader(resp.StatusCode)
-	io.Copy(w, resp.Body)
+	h.copyResponseBody(w, resp.Body)
 }
 
 func (h *Handler) handleConnectHTTP(w http.ResponseWriter, r *http.Request) {
@@ -233,19 +275,26 @@ func (h *Handler) handleConnectHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) tunnel(clientConn, targetConn net.Conn) {
+	buf := bufferPool.Get().(*[]byte)
+	defer bufferPool.Put(buf)
+
 	errc := make(chan error, 2)
 
 	go func() {
-		_, err := io.Copy(targetConn, clientConn)
+		_, err := ioCopyBuffer(targetConn, clientConn, *buf)
 		targetConn.Close()
 		errc <- err
 	}()
 
 	go func() {
-		_, err := io.Copy(clientConn, targetConn)
+		_, err := ioCopyBuffer(clientConn, targetConn, *buf)
 		clientConn.Close()
 		errc <- err
 	}()
 
 	<-errc
+}
+
+func ioCopyBuffer(dst io.Writer, src io.Reader, buf []byte) (int64, error) {
+	return io.CopyBuffer(dst, src, buf)
 }
