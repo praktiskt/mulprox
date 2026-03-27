@@ -1,10 +1,13 @@
-.PHONY: build test run clean docker-build docker-run
+.PHONY: build test e2e run clean docker-build docker-run
 
 build:
 	go build -o mulprox .
 
 test:
-	go test -v ./...
+	go test -v $(shell go list ./... | grep -v /e2e)
+
+e2e:
+	go test -v -short=false ./e2e/...
 
 run:
 	go run . serve

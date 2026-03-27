@@ -1,4 +1,4 @@
-package cmd
+package e2e
 
 import (
 	"context"
