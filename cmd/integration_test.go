@@ -25,6 +25,39 @@ func TestMullvadProvider(t *testing.T) {
 	}
 
 	t.Logf("found %d mullvad servers", len(servers))
+
+	first := servers[0]
+	t.Logf("first server: country=%s, city=%s, socks5=%s, ipv4=%s, provider=%s, hostname=%s, owned=%v, multihop=%d",
+		first.Country, first.City, first.SOCKS5, first.IPv4, first.Provider, first.Hostname, first.Owned, first.Multihop)
+
+	if first.Country == "" {
+		t.Error("expected non-empty country")
+	}
+	if first.City == "" {
+		t.Error("expected non-empty city")
+	}
+	if first.SOCKS5 == "" {
+		t.Error("expected non-empty socks5")
+	}
+	if first.IPv4 == "" {
+		t.Error("expected non-empty ipv4")
+	}
+	if first.Hostname == "" {
+		t.Error("expected non-empty hostname")
+	}
+
+	usServers := p.GetServersByCountry("USA")
+	t.Logf("found %d US servers", len(usServers))
+
+	if len(usServers) > 0 {
+		t.Logf("first US server: %s %s", usServers[0].City, usServers[0].Hostname)
+	}
+
+	owned := p.GetOwnedServers()
+	t.Logf("found %d owned servers", len(owned))
+
+	multihop := p.GetMultihopServers()
+	t.Logf("found %d multihop servers", len(multihop))
 }
 
 func TestMullvadSession(t *testing.T) {

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
-	"regexp"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,8 +21,6 @@ const (
 	preset              = "chrome-latest"
 )
 
-var ipPattern = regexp.MustCompile(`\b10\.124\.\d{1,3}\.\d{1,3}\b`)
-
 type Status struct {
 	MullvadExitIP bool   `json:"mullvad_exit_ip"`
 	IP            string `json:"ip"`
@@ -31,9 +29,24 @@ type Status struct {
 	ServerType    string `json:"mullvad_server_type"`
 }
 
+type Server struct {
+	Flag     string
+	Country  string
+	City     string
+	SOCKS5   string
+	IPv4     string
+	IPv6     string
+	Speed    int
+	Multihop int
+	Owned    bool
+	Provider string
+	STBoot   bool
+	Hostname string
+}
+
 type Provider struct {
 	mu            sync.RWMutex
-	mullvadList   []string
+	mullvadList   []Server
 	lastFetch     time.Time
 	mullvadStatus *bool
 	statusCheckMu sync.RWMutex
@@ -62,7 +75,7 @@ func (p *Provider) Session(ctx context.Context, timeout time.Duration) (*client.
 
 	server := FallbackMullvad
 	if len(mullvadServers) > 0 {
-		server = fmt.Sprintf("%s:1080", mullvadServers[rand.Intn(len(mullvadServers))])
+		server = fmt.Sprintf("%s:1080", mullvadServers[rand.Intn(len(mullvadServers))].SOCKS5)
 	}
 
 	return client.NewSession(preset,
@@ -96,7 +109,7 @@ func (p *Provider) CheckMullvadStatus(ctx context.Context) (bool, error) {
 	return isMullvad, nil
 }
 
-func (p *Provider) FetchMullvadList(ctx context.Context) ([]string, error) {
+func (p *Provider) FetchMullvadList(ctx context.Context) ([]Server, error) {
 	p.mu.RLock()
 	if !p.lastFetch.IsZero() && time.Since(p.lastFetch) < MullvadListCacheTTL && len(p.mullvadList) > 0 {
 		list := p.mullvadList
@@ -117,7 +130,7 @@ func (p *Provider) FetchMullvadList(ctx context.Context) ([]string, error) {
 			return nil, err
 		}
 
-		mullvadServers := extractMullvadServers(string(body))
+		mullvadServers := parseMullvadList(string(body))
 
 		p.mu.Lock()
 		p.mullvadList = mullvadServers
@@ -130,20 +143,112 @@ func (p *Provider) FetchMullvadList(ctx context.Context) ([]string, error) {
 		return nil, err
 	}
 
-	return result.([]string), nil
+	return result.([]Server), nil
 }
 
-func extractMullvadServers(text string) []string {
-	matches := ipPattern.FindAllString(text, -1)
-	seen := make(map[string]bool)
-	var servers []string
+func parseMullvadList(text string) []Server {
+	lines := strings.Split(text, "\n")
+	var servers []Server
 
-	for _, ip := range matches {
-		if !seen[ip] {
-			seen[ip] = true
-			servers = append(servers, ip)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+
+		if strings.HasPrefix(line, "Date:") || strings.HasPrefix(line, "Total active") {
+			continue
+		}
+
+		if len(line) < 80 || strings.HasPrefix(line, " flag") {
+			continue
+		}
+
+		server, ok := parseServerLine(line)
+		if ok {
+			servers = append(servers, server)
 		}
 	}
 
 	return servers
+}
+
+func parseServerLine(line string) (Server, bool) {
+	fields := strings.Fields(line)
+
+	if len(fields) < 12 {
+		return Server{}, false
+	}
+
+	s := Server{
+		Flag:     fields[0],
+		Country:  fields[1],
+		City:     strings.Join(fields[2:len(fields)-9], " "),
+		SOCKS5:   fields[len(fields)-9],
+		IPv4:     fields[len(fields)-8],
+		IPv6:     fields[len(fields)-7],
+		Provider: fields[len(fields)-3],
+		Hostname: fields[len(fields)-1],
+	}
+
+	if !strings.Contains(s.SOCKS5, ".") {
+		return Server{}, false
+	}
+
+	fmt.Sscanf(fields[len(fields)-6], "%d", &s.Speed)
+	fmt.Sscanf(fields[len(fields)-5], "%d", &s.Multihop)
+
+	s.Owned = fields[len(fields)-3] == "✔"
+	s.STBoot = fields[len(fields)-2] == "✔"
+
+	return s, true
+}
+
+func (p *Provider) GetServersByCountry(country string) []Server {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var result []Server
+	for _, s := range p.mullvadList {
+		if strings.EqualFold(s.Country, country) {
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+func (p *Provider) GetServersByCity(city string) []Server {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var result []Server
+	for _, s := range p.mullvadList {
+		if strings.EqualFold(s.City, city) {
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+func (p *Provider) GetOwnedServers() []Server {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var result []Server
+	for _, s := range p.mullvadList {
+		if s.Owned {
+			result = append(result, s)
+		}
+	}
+	return result
+}
+
+func (p *Provider) GetMultihopServers() []Server {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	var result []Server
+	for _, s := range p.mullvadList {
+		if s.Multihop > 0 {
+			result = append(result, s)
+		}
+	}
+	return result
 }
