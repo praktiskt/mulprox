@@ -5,12 +5,14 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"net"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/sardanioss/httpcloak/client"
+	"golang.org/x/net/proxy"
 	"golang.org/x/sync/singleflight"
 )
 
@@ -62,13 +64,6 @@ func New() *Provider {
 	}
 }
 
-func NewSession(timeout time.Duration) *client.Client {
-	return client.NewSession(preset,
-		client.WithTimeout(timeout),
-		client.WithECHFrom("cloudflare.com"),
-	)
-}
-
 func (p *Provider) Session(ctx context.Context, timeout time.Duration) (*client.Client, error) {
 	mullvadServers, err := p.FetchMullvadList(ctx)
 	if err != nil {
@@ -85,6 +80,54 @@ func (p *Provider) Session(ctx context.Context, timeout time.Duration) (*client.
 		client.WithTimeout(timeout),
 		client.WithProxy("socks5://"+server),
 	), nil
+}
+
+func (p *Provider) SOCKS5Dialer(ctx context.Context, timeout time.Duration) (proxy.Dialer, error) {
+	mullvadServers, err := p.FetchMullvadList(context.Background())
+	if err != nil {
+		return nil, err
+	}
+
+	server := FallbackMullvad
+	if len(mullvadServers) > 0 {
+		s := mullvadServers[rand.Intn(len(mullvadServers))]
+		server = fmt.Sprintf("%s:%d", s.SOCKS5, s.SOCKSPort)
+	}
+
+	dialer, err := proxy.SOCKS5("tcp", server, nil, proxy.Direct)
+	if err != nil {
+		return nil, err
+	}
+
+	return &timeoutDialer{dialer, timeout}, nil
+}
+
+type timeoutDialer struct {
+	dialer  proxy.Dialer
+	timeout time.Duration
+}
+
+func (d *timeoutDialer) Dial(network, address string) (net.Conn, error) {
+	timeoutCtx, cancel := context.WithTimeout(context.Background(), d.timeout)
+	defer cancel()
+
+	type result struct {
+		conn net.Conn
+		err  error
+	}
+	ch := make(chan result, 1)
+
+	go func() {
+		conn, err := d.dialer.Dial(network, address)
+		ch <- result{conn, err}
+	}()
+
+	select {
+	case r := <-ch:
+		return r.conn, r.err
+	case <-timeoutCtx.Done():
+		return nil, timeoutCtx.Err()
+	}
 }
 
 func (p *Provider) CheckMullvadStatus(ctx context.Context) (bool, error) {

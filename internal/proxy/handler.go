@@ -2,12 +2,13 @@ package proxy
 
 import (
 	"context"
+	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
 	"github.com/praktiskt/mulprox/internal/mullvad"
 	"github.com/sardanioss/httpcloak/client"
 )
@@ -26,12 +27,23 @@ func New(logger *slog.Logger, timeout time.Duration) *Handler {
 	}
 }
 
-func (h *Handler) HandleRequest(c *gin.Context) {
-	targetURL := c.Request.URL.String()
+func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.logger.Debug("request", slog.String("method", r.Method), slog.String("url", r.URL.String()), slog.String("host", r.Host))
 
-	if targetURL == "/" && c.Request.Method == http.MethodGet {
-		c.Header("Content-Type", "text/plain")
-		c.String(http.StatusOK, "Mullvad Proxy Server\nUsage: Set HTTP_PROXY environment variable to point to this server")
+	if r.Method == http.MethodConnect {
+		h.handleConnectHTTP(w, r)
+		return
+	}
+
+	h.handleHTTP(w, r)
+}
+
+func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
+	targetURL := r.URL.String()
+
+	if targetURL == "/" && r.Method == http.MethodGet {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("Mullvad Proxy Server\nUsage: Set HTTP_PROXY environment variable to point to this server"))
 		return
 	}
 
@@ -45,25 +57,25 @@ func (h *Handler) HandleRequest(c *gin.Context) {
 		targetURL = "https://" + targetURL
 	}
 
-	h.logger.Debug("proxying request", slog.String("url", targetURL), slog.String("method", c.Request.Method))
+	h.logger.Debug("proxying request", slog.String("url", targetURL), slog.String("method", r.Method))
 
-	ctx, cancel := context.WithTimeout(c.Request.Context(), h.timeout)
+	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	h.proxyRequest(ctx, c, targetURL)
+	h.proxyRequestHTTP(ctx, w, r, targetURL)
 }
 
-func (h *Handler) proxyRequest(ctx context.Context, c *gin.Context, targetURL string) {
+func (h *Handler) proxyRequestHTTP(ctx context.Context, w http.ResponseWriter, r *http.Request, targetURL string) {
 	cclient, err := h.mullvad.Session(ctx, h.timeout)
 	if err != nil {
 		h.logger.Error("failed to create Mullvad session", slog.String("error", err.Error()))
-		c.JSON(http.StatusServiceUnavailable, gin.H{"error": "failed to create proxy session"})
+		http.Error(w, "failed to create proxy session", http.StatusServiceUnavailable)
 		return
 	}
 	defer cclient.Close()
 
 	headers := make(map[string][]string)
-	for key, values := range c.Request.Header {
+	for key, values := range r.Header {
 		headers[key] = values
 	}
 
@@ -72,7 +84,7 @@ func (h *Handler) proxyRequest(ctx context.Context, c *gin.Context, targetURL st
 	}
 
 	req := &client.Request{
-		Method:  c.Request.Method,
+		Method:  r.Method,
 		URL:     targetURL,
 		Headers: headers,
 	}
@@ -80,20 +92,83 @@ func (h *Handler) proxyRequest(ctx context.Context, c *gin.Context, targetURL st
 	resp, err := cclient.Do(ctx, req)
 	if err != nil {
 		h.logger.Error("failed to proxy request", slog.String("error", err.Error()))
-		c.JSON(http.StatusBadGateway, gin.H{"error": "failed to reach target"})
+		http.Error(w, "failed to reach target", http.StatusBadGateway)
 		return
 	}
 	defer resp.Close()
 
 	for key, values := range resp.Headers {
 		for _, value := range values {
-			c.Header(key, value)
+			w.Header().Add(key, value)
 		}
 	}
 
-	c.Status(resp.StatusCode)
+	w.WriteHeader(resp.StatusCode)
 
-	if c.Request.Body != nil {
-		c.Request.Body.Close()
+	io.Copy(w, resp.Body)
+}
+
+func (h *Handler) handleConnectHTTP(w http.ResponseWriter, r *http.Request) {
+	host := r.Host
+	if host == "" {
+		host = r.URL.Host
 	}
+	h.logger.Debug("handling CONNECT", slog.String("host", host))
+
+	if host == "" {
+		http.Error(w, "missing host", http.StatusBadRequest)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
+	defer cancel()
+
+	dialer, err := h.mullvad.SOCKS5Dialer(ctx, h.timeout)
+	if err != nil {
+		h.logger.Error("failed to create Mullvad session", slog.String("error", err.Error()))
+		http.Error(w, "failed to create proxy session", http.StatusServiceUnavailable)
+		return
+	}
+
+	targetConn, err := dialer.Dial("tcp", host)
+	if err != nil {
+		h.logger.Error("failed to connect to target", slog.String("error", err.Error()))
+		http.Error(w, "failed to connect to target", http.StatusBadGateway)
+		return
+	}
+
+	w.Header().Set("Connection", "Keep-Alive")
+	w.WriteHeader(http.StatusOK)
+
+	hij, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "hijack not supported", http.StatusInternalServerError)
+		return
+	}
+
+	clientConn, _, err := hij.Hijack()
+	if err != nil {
+		h.logger.Error("failed to hijack connection", slog.String("error", err.Error()))
+		return
+	}
+
+	h.tunnel(clientConn, targetConn)
+}
+
+func (h *Handler) tunnel(clientConn, targetConn net.Conn) {
+	errc := make(chan error, 2)
+
+	go func() {
+		_, err := io.Copy(targetConn, clientConn)
+		targetConn.Close()
+		errc <- err
+	}()
+
+	go func() {
+		_, err := io.Copy(clientConn, targetConn)
+		clientConn.Close()
+		errc <- err
+	}()
+
+	<-errc
 }

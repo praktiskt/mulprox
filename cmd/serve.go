@@ -12,7 +12,6 @@ import (
 
 	"github.com/praktiskt/mulprox/internal/proxy"
 
-	"github.com/gin-gonic/gin"
 	"github.com/spf13/cobra"
 )
 
@@ -31,19 +30,12 @@ var serveCmd = &cobra.Command{
 
 		proxyHandler := proxy.New(logger, timeout)
 
-		gin.SetMode(gin.ReleaseMode)
-		router := gin.New()
-		router.Use(gin.Recovery())
-
-		router.Any("/:url", proxyHandler.HandleRequest)
-		router.Any("/", proxyHandler.HandleRequest)
-
 		addr := fmt.Sprintf("%s:%d", host, port)
 		logger.Info("proxy server listening", slog.String("addr", addr))
 
 		s := &http.Server{
 			Addr:              addr,
-			Handler:           router,
+			Handler:           proxyHandler,
 			ReadTimeout:       30 * time.Second,
 			ReadHeaderTimeout: 10 * time.Second,
 			WriteTimeout:      60 * time.Second,
