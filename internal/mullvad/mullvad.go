@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"math/rand"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -14,7 +15,7 @@ import (
 )
 
 const (
-	MullvadListURL      = "https://raw.githubusercontent.com/maximko/mullvad-socks-list/list/mullvad-socks-list.txt"
+	MullvadListURL      = "https://mullvad.net/en/servers"
 	MullvadURL          = "https://am.i.mullvad.net/json"
 	MullvadListCacheTTL = 3 * time.Hour
 	FallbackMullvad     = "10.64.0.1:1080"
@@ -30,18 +31,19 @@ type Status struct {
 }
 
 type Server struct {
-	Flag     string
-	Country  string
-	City     string
-	SOCKS5   string
-	IPv4     string
-	IPv6     string
-	Speed    int
-	Multihop int
-	Owned    bool
-	Provider string
-	STBoot   bool
-	Hostname string
+	Flag      string
+	Country   string
+	City      string
+	SOCKS5    string
+	SOCKSPort int
+	IPv4      string
+	IPv6      string
+	Speed     int
+	Multihop  int
+	Owned     bool
+	Provider  string
+	STBoot    bool
+	Hostname  string
 }
 
 type Provider struct {
@@ -75,7 +77,8 @@ func (p *Provider) Session(ctx context.Context, timeout time.Duration) (*client.
 
 	server := FallbackMullvad
 	if len(mullvadServers) > 0 {
-		server = fmt.Sprintf("%s:1080", mullvadServers[rand.Intn(len(mullvadServers))].SOCKS5)
+		s := mullvadServers[rand.Intn(len(mullvadServers))]
+		server = fmt.Sprintf("%s:%d", s.SOCKS5, s.SOCKSPort)
 	}
 
 	return client.NewSession(preset,
@@ -130,7 +133,7 @@ func (p *Provider) FetchMullvadList(ctx context.Context) ([]Server, error) {
 			return nil, err
 		}
 
-		mullvadServers := parseMullvadList(string(body))
+		mullvadServers := parseMullvadRelays(string(body))
 
 		p.mu.Lock()
 		p.mullvadList = mullvadServers
@@ -146,77 +149,73 @@ func (p *Provider) FetchMullvadList(ctx context.Context) ([]Server, error) {
 	return result.([]Server), nil
 }
 
-func parseMullvadList(text string) []Server {
-	lines := strings.Split(text, "\n")
+var relayRe = regexp.MustCompile(`hostname:"(?P<hostname>[^"]+)",country_code:"(?P<flag>[^"]+)",country_name:"(?P<country>[^"]+)",city_code:"[^"]+",city_name:"(?P<city>[^"]+)",fqdn:"[^"]+",active:(?P<active>true|false),owned:(?P<owned>true|false),provider:"(?P<provider>[^"]+)",ipv4_addr_in:"(?P<ipv4>[^"]+)",ipv6_addr_in:"(?P<ipv6>[^"]+)",network_port_speed:(?P<speed>\d+),stboot:(?P<stboot>true|false),type:"[^"]+",status_messages:\[\],pubkey:"[^"]+",multihop_port:(?P<multihop>\d+),socks_name:"(?P<socks>[^"]+)",socks_port:(?P<socksport>\d+),daita:`)
+
+func parseMullvadRelays(html string) []Server {
+	start := strings.Index(html, "relays:[")
+	if start == -1 {
+		return nil
+	}
+
+	bracketCount := 1
+	end := len(html)
+	for i := start + 7; i < len(html); i++ {
+		if html[i] == '[' {
+			bracketCount++
+		} else if html[i] == ']' {
+			bracketCount--
+			if bracketCount == 0 {
+				end = i + 1
+				break
+			}
+		}
+	}
+
+	jsArray := html[start+7 : end]
+
+	matches := relayRe.FindAllStringSubmatch(jsArray, -1)
+	names := relayRe.SubexpNames()
+
+	get := func(m []string, name string) string {
+		for i, n := range names {
+			if n == name {
+				return m[i]
+			}
+		}
+		return ""
+	}
+
 	var servers []Server
-
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-
-		if strings.HasPrefix(line, "Date:") || strings.HasPrefix(line, "Total active") {
+	for _, m := range matches {
+		if get(m, "active") != "true" {
 			continue
 		}
 
-		if len(line) < 80 || strings.HasPrefix(line, " flag") {
-			continue
-		}
+		speed := 0
+		fmt.Sscanf(get(m, "speed"), "%d", &speed)
+		multihop := 0
+		fmt.Sscanf(get(m, "multihop"), "%d", &multihop)
+		socksPort := 0
+		fmt.Sscanf(get(m, "socksport"), "%d", &socksPort)
 
-		server, ok := parseServerLine(line)
-		if ok {
-			servers = append(servers, server)
-		}
+		servers = append(servers, Server{
+			Flag:      get(m, "flag"),
+			Country:   get(m, "country"),
+			City:      get(m, "city"),
+			SOCKS5:    get(m, "socks"),
+			IPv4:      get(m, "ipv4"),
+			IPv6:      get(m, "ipv6"),
+			Speed:     speed,
+			Multihop:  multihop,
+			Owned:     get(m, "owned") == "true",
+			Provider:  get(m, "provider"),
+			STBoot:    get(m, "stboot") == "true",
+			Hostname:  get(m, "hostname"),
+			SOCKSPort: socksPort,
+		})
 	}
 
 	return servers
-}
-
-var multiWordCountries = map[string]string{
-	"New":   "New Zealand",
-	"South": "South Africa",
-	"Czech": "Czech Republic",
-	"Hong":  "Hong Kong",
-}
-
-func parseServerLine(line string) (Server, bool) {
-	fields := strings.Fields(line)
-
-	if len(fields) < 12 {
-		return Server{}, false
-	}
-
-	countryIdx := 1
-	if nextField, ok := multiWordCountries[fields[1]]; ok {
-		if fields[2] == strings.Fields(nextField)[1] {
-			countryIdx = 2
-		}
-	}
-
-	s := Server{
-		Flag:    fields[0],
-		Country: strings.Join(fields[1:countryIdx+1], " "),
-	}
-
-	cityStart := countryIdx + 1
-
-	s.SOCKS5 = fields[len(fields)-9]
-	s.IPv4 = fields[len(fields)-8]
-	s.IPv6 = fields[len(fields)-7]
-	s.Provider = fields[len(fields)-3]
-	s.Hostname = fields[len(fields)-1]
-
-	if !strings.Contains(s.SOCKS5, ".") {
-		return Server{}, false
-	}
-
-	s.City = strings.Join(fields[cityStart:len(fields)-9], " ")
-
-	fmt.Sscanf(fields[len(fields)-6], "%d", &s.Speed)
-	fmt.Sscanf(fields[len(fields)-5], "%d", &s.Multihop)
-
-	s.Owned = fields[len(fields)-3] == "✔"
-	s.STBoot = fields[len(fields)-2] == "✔"
-
-	return s, true
 }
 
 func (p *Provider) GetServersByCountry(country string) []Server {
