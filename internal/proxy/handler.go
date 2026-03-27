@@ -2,12 +2,12 @@ package proxy
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -15,6 +15,40 @@ import (
 	"github.com/praktiskt/mulprox/internal/mullvad"
 	"golang.org/x/net/proxy"
 )
+
+type ProxyAuth struct {
+	Country  string `json:"country,omitempty"`
+	City     string `json:"city,omitempty"`
+	Seed     int64  `json:"seed,omitempty"`
+	Owned    *bool  `json:"owned,omitempty"`
+	Provider string `json:"provider,omitempty"`
+	MinSpeed int    `json:"speed,omitempty"`
+	Multihop bool   `json:"multihop,omitempty"`
+}
+
+func (p *ProxyAuth) Apply(filter *mullvad.Filter) {
+	if p.Country != "" {
+		filter.Country = p.Country
+	}
+	if p.City != "" {
+		filter.City = p.City
+	}
+	if p.Seed != 0 {
+		filter.Seed = p.Seed
+	}
+	if p.Owned != nil {
+		filter.Owned = p.Owned
+	}
+	if p.Provider != "" {
+		filter.Provider = p.Provider
+	}
+	if p.MinSpeed > 0 {
+		filter.MinSpeed = p.MinSpeed
+	}
+	if p.Multihop {
+		filter.Multihop = p.Multihop
+	}
+}
 
 var transportPool = sync.Pool{
 	New: func() interface{} {
@@ -28,16 +62,6 @@ var bufferPool = sync.Pool{
 		return &buf
 	},
 }
-
-const (
-	HeaderCountry  = "X-Mulprox-Country"
-	HeaderCity     = "X-Mulprox-City"
-	HeaderSeed     = "X-Mulprox-Seed"
-	HeaderOwned    = "X-Mulprox-Owned"
-	HeaderProvider = "X-Mulprox-Provider"
-	HeaderMinSpeed = "X-Mulprox-Speed"
-	HeaderMultihop = "X-Mulprox-Multihop"
-)
 
 type Handler struct {
 	logger  *slog.Logger
@@ -83,35 +107,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func (h *Handler) getSOCKS5AddrFromRequest(r *http.Request) (string, error) {
 	filter := mullvad.Filter{}
 
-	if v := r.Header.Get(HeaderCountry); v != "" {
-		filter.Country = v
-	}
-	if v := r.Header.Get(HeaderCity); v != "" {
-		filter.City = v
-	}
-	if v := r.Header.Get(HeaderSeed); v != "" {
-		seed, err := strconv.ParseInt(v, 10, 64)
-		if err != nil {
-			return "", fmt.Errorf("invalid seed: %w", err)
+	// Parse Proxy-Authorization header (JSON)
+	if v := r.Header.Get("Proxy-Authorization"); v != "" {
+		var auth ProxyAuth
+		if err := json.Unmarshal([]byte(v), &auth); err != nil {
+			return "", fmt.Errorf("invalid Proxy-Authorization JSON: %w", err)
 		}
-		filter.Seed = seed
-	}
-	if v := r.Header.Get(HeaderOwned); v != "" {
-		owned := strings.ToLower(v) == "true"
-		filter.Owned = &owned
-	}
-	if v := r.Header.Get(HeaderProvider); v != "" {
-		filter.Provider = v
-	}
-	if v := r.Header.Get(HeaderMinSpeed); v != "" {
-		speed, err := strconv.Atoi(v)
-		if err != nil {
-			return "", fmt.Errorf("invalid speed: %w", err)
-		}
-		filter.MinSpeed = speed
-	}
-	if v := r.Header.Get(HeaderMultihop); v != "" {
-		filter.Multihop = strings.ToLower(v) == "true"
+		auth.Apply(&filter)
 	}
 
 	if filter.Country == "" && filter.City == "" && filter.Owned == nil &&
@@ -124,26 +126,6 @@ func (h *Handler) getSOCKS5AddrFromRequest(r *http.Request) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("%s:%d", server.SOCKS5, server.SOCKSPort), nil
-}
-
-func (h *Handler) stripProxyHeaders(headers http.Header) http.Header {
-	prefix := "X-Mulprox-"
-	for key := range headers {
-		if strings.HasPrefix(key, prefix) {
-			headers.Del(key)
-		}
-	}
-	return headers
-}
-
-func (h *Handler) copyAndStripHeaders(dst, src http.Header) {
-	prefix := "X-Mulprox-"
-	for key, values := range src {
-		if strings.HasPrefix(key, prefix) {
-			continue
-		}
-		dst[key] = values
-	}
 }
 
 func (h *Handler) copyResponseBody(w http.ResponseWriter, body io.Reader) {
@@ -203,7 +185,9 @@ func (h *Handler) proxyRequestHTTP(ctx context.Context, w http.ResponseWriter, r
 		http.Error(w, "failed to create request", http.StatusBadRequest)
 		return
 	}
-	h.copyAndStripHeaders(req.Header, r.Header)
+	for key, values := range r.Header {
+		req.Header[key] = values
+	}
 
 	resp, err := transport.RoundTrip(req)
 	if err != nil {

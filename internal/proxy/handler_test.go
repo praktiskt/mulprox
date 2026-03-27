@@ -1,85 +1,90 @@
 package proxy
 
 import (
+	"encoding/json"
 	"net/http"
 	"testing"
+
+	"github.com/praktiskt/mulprox/internal/mullvad"
 )
 
-func TestStripProxyHeaders(t *testing.T) {
-	h := &Handler{}
-
+func TestProxyAuthJSON(t *testing.T) {
 	tests := []struct {
 		name     string
-		input    map[string][]string
-		expected map[string][]string
+		input    string
+		expected ProxyAuth
 	}{
 		{
-			name: "removes X-Mulprox headers",
-			input: map[string][]string{
-				"Accept":            {"*/*"},
-				"X-Mulprox-Country": {"Sweden"},
-				"X-Mulprox-Seed":    {"12345"},
-				"User-Agent":        {"curl/7.68.0"},
-			},
-			expected: map[string][]string{
-				"Accept":     {"*/*"},
-				"User-Agent": {"curl/7.68.0"},
-			},
+			name:     "seed only",
+			input:    `{"seed": 123}`,
+			expected: ProxyAuth{Seed: 123},
 		},
 		{
-			name: "keeps non-X-Mulprox headers",
-			input: map[string][]string{
-				"Accept-Encoding": {"gzip"},
-				"Authorization":   {"Bearer token"},
-				"X-Forwarded-For": {"1.2.3.4"},
-			},
-			expected: map[string][]string{
-				"Accept-Encoding": {"gzip"},
-				"Authorization":   {"Bearer token"},
-				"X-Forwarded-For": {"1.2.3.4"},
-			},
+			name:     "country only",
+			input:    `{"country": "Sweden"}`,
+			expected: ProxyAuth{Country: "Sweden"},
 		},
 		{
-			name:     "handles empty headers",
-			input:    map[string][]string{},
-			expected: map[string][]string{},
-		},
-		{
-			name: "handles only X-Mulprox headers",
-			input: map[string][]string{
-				"X-Mulprox-Country":  {"Sweden"},
-				"X-Mulprox-City":     {"Stockholm"},
-				"X-Mulprox-Owned":    {"true"},
-				"X-Mulprox-Provider": {"M247"},
-				"X-Mulprox-Speed":    {"1000"},
-				"X-Mulprox-Multihop": {"false"},
-				"X-Mulprox-Seed":     {"42"},
+			name:  "all fields",
+			input: `{"seed": 42, "country": "Norway", "city": "Oslo", "speed": 1000, "multihop": true}`,
+			expected: ProxyAuth{
+				Seed:     42,
+				Country:  "Norway",
+				City:     "Oslo",
+				MinSpeed: 1000,
+				Multihop: true,
 			},
-			expected: map[string][]string{},
 		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			headers := http.Header(tt.input)
-			result := h.stripProxyHeaders(headers)
-
-			for key, expectedValues := range tt.expected {
-				if result.Get(key) == "" {
-					t.Errorf("expected header %q to be present", key)
-					continue
-				}
-				if len(result[key]) != len(expectedValues) {
-					t.Errorf("expected %d values for %q, got %d", len(expectedValues), key, len(result[key]))
-				}
+			var auth ProxyAuth
+			if err := json.Unmarshal([]byte(tt.input), &auth); err != nil {
+				t.Fatalf("failed to unmarshal: %v", err)
 			}
-
-			for key := range result {
-				if _, ok := tt.expected[key]; !ok {
-					t.Errorf("unexpected header %q in result", key)
-				}
+			if auth != tt.expected {
+				t.Errorf("expected %+v, got %+v", tt.expected, auth)
 			}
 		})
+	}
+}
+
+func TestProxyAuthApply(t *testing.T) {
+	owned := true
+	auth := ProxyAuth{
+		Seed:     123,
+		Country:  "Sweden",
+		City:     "Stockholm",
+		Owned:    &owned,
+		Provider: "Mullvad",
+		MinSpeed: 100,
+		Multihop: true,
+	}
+
+	filter := mullvad.Filter{}
+	auth.Apply(&filter)
+
+	if filter.Seed != 123 {
+		t.Errorf("expected seed 123, got %d", filter.Seed)
+	}
+	if filter.Country != "Sweden" {
+		t.Errorf("expected country Sweden, got %s", filter.Country)
+	}
+	if filter.City != "Stockholm" {
+		t.Errorf("expected city Stockholm, got %s", filter.City)
+	}
+	if filter.Owned == nil || *filter.Owned != true {
+		t.Error("expected owned to be true")
+	}
+	if filter.Provider != "Mullvad" {
+		t.Errorf("expected provider Mullvad, got %s", filter.Provider)
+	}
+	if filter.MinSpeed != 100 {
+		t.Errorf("expected min speed 100, got %d", filter.MinSpeed)
+	}
+	if !filter.Multihop {
+		t.Error("expected multihop to be true")
 	}
 }
 
@@ -88,74 +93,25 @@ func TestGetSOCKS5AddrFromRequest(t *testing.T) {
 	h := &Handler{}
 
 	tests := []struct {
-		name          string
-		headers       map[string]string
-		expectErr     bool
-		expectCountry string
+		name      string
+		authJSON  string
+		expectErr bool
 	}{
 		{
-			name: "country header",
-			headers: map[string]string{
-				"X-Mulprox-Country": "Sweden",
-			},
-			expectCountry: "Sweden",
+			name:     "seed",
+			authJSON: `{"seed": 123}`,
 		},
 		{
-			name: "seed header",
-			headers: map[string]string{
-				"X-Mulprox-Seed": "12345",
-			},
+			name:     "country",
+			authJSON: `{"country": "Sweden"}`,
 		},
 		{
-			name: "city header",
-			headers: map[string]string{
-				"X-Mulprox-City": "Stockholm",
-			},
+			name:     "combined",
+			authJSON: `{"seed": 42, "country": "Sweden"}`,
 		},
 		{
-			name: "owned header",
-			headers: map[string]string{
-				"X-Mulprox-Owned": "true",
-			},
-		},
-		{
-			name: "provider header",
-			headers: map[string]string{
-				"X-Mulprox-Provider": "M247",
-			},
-		},
-		{
-			name: "speed header",
-			headers: map[string]string{
-				"X-Mulprox-Speed": "1000",
-			},
-		},
-		{
-			name: "multihop header",
-			headers: map[string]string{
-				"X-Mulprox-Multihop": "true",
-			},
-		},
-		{
-			name: "combined headers",
-			headers: map[string]string{
-				"X-Mulprox-Country": "Sweden",
-				"X-Mulprox-Seed":    "42",
-			},
-			expectCountry: "Sweden",
-		},
-		{
-			name: "invalid seed",
-			headers: map[string]string{
-				"X-Mulprox-Seed": "not-a-number",
-			},
-			expectErr: true,
-		},
-		{
-			name: "invalid speed",
-			headers: map[string]string{
-				"X-Mulprox-Speed": "not-a-number",
-			},
+			name:      "invalid JSON",
+			authJSON:  `{invalid}`,
 			expectErr: true,
 		},
 	}
@@ -163,10 +119,9 @@ func TestGetSOCKS5AddrFromRequest(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			req := &http.Request{
-				Header: http.Header{},
-			}
-			for k, v := range tt.headers {
-				req.Header.Set(k, v)
+				Header: http.Header{
+					"Proxy-Authorization": {tt.authJSON},
+				},
 			}
 
 			addr, err := h.getSOCKS5AddrFromRequest(req)
