@@ -83,23 +83,31 @@ func (p *Provider) Session(ctx context.Context, timeout time.Duration) (*client.
 }
 
 func (p *Provider) SOCKS5Dialer(ctx context.Context, timeout time.Duration) (proxy.Dialer, error) {
-	mullvadServers, err := p.FetchMullvadList(context.Background())
+	socksAddr, err := p.RandomSOCKS5Addr()
 	if err != nil {
 		return nil, err
 	}
 
-	server := FallbackMullvad
-	if len(mullvadServers) > 0 {
-		s := mullvadServers[rand.Intn(len(mullvadServers))]
-		server = fmt.Sprintf("%s:%d", s.SOCKS5, s.SOCKSPort)
-	}
-
-	dialer, err := proxy.SOCKS5("tcp", server, nil, proxy.Direct)
+	dialer, err := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
 	if err != nil {
 		return nil, err
 	}
 
 	return &timeoutDialer{dialer, timeout}, nil
+}
+
+func (p *Provider) RandomSOCKS5Addr() (string, error) {
+	mullvadServers, err := p.FetchMullvadList(context.Background())
+	if err != nil {
+		return "", err
+	}
+
+	if len(mullvadServers) == 0 {
+		return FallbackMullvad, nil
+	}
+
+	s := mullvadServers[rand.Intn(len(mullvadServers))]
+	return fmt.Sprintf("%s:%d", s.SOCKS5, s.SOCKSPort), nil
 }
 
 type timeoutDialer struct {

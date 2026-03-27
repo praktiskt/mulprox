@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
-	"github.com/sardanioss/httpcloak/client"
+	"golang.org/x/net/proxy"
 )
 
 type Handler struct {
@@ -66,45 +66,50 @@ func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) proxyRequestHTTP(ctx context.Context, w http.ResponseWriter, r *http.Request, targetURL string) {
-	cclient, err := h.mullvad.Session(ctx, h.timeout)
+	socksAddr, err := h.mullvad.RandomSOCKS5Addr()
 	if err != nil {
-		h.logger.Error("failed to create Mullvad session", slog.String("error", err.Error()))
+		h.logger.Error("failed to get Mullvad server", slog.String("error", err.Error()))
 		http.Error(w, "failed to create proxy session", http.StatusServiceUnavailable)
 		return
 	}
-	defer cclient.Close()
 
-	headers := make(map[string][]string)
-	for key, values := range r.Header {
-		headers[key] = values
+	socksDialer, err := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
+	if err != nil {
+		h.logger.Error("failed to create SOCKS5 dialer", slog.String("error", err.Error()))
+		http.Error(w, "failed to create proxy session", http.StatusServiceUnavailable)
+		return
 	}
 
-	if _, ok := headers["User-Agent"]; !ok {
-		headers["User-Agent"] = []string{"mulprox/1.0"}
+	transport := &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return socksDialer.Dial(network, addr)
+		},
+		TLSHandshakeTimeout: h.timeout,
 	}
 
-	req := &client.Request{
-		Method:  r.Method,
-		URL:     targetURL,
-		Headers: headers,
+	req, err := http.NewRequestWithContext(ctx, r.Method, targetURL, r.Body)
+	if err != nil {
+		h.logger.Error("failed to create request", slog.String("error", err.Error()))
+		http.Error(w, "failed to create request", http.StatusBadRequest)
+		return
 	}
+	req.Header = r.Header.Clone()
 
-	resp, err := cclient.Do(ctx, req)
+	resp, err := transport.RoundTrip(req)
 	if err != nil {
 		h.logger.Error("failed to proxy request", slog.String("error", err.Error()))
 		http.Error(w, "failed to reach target", http.StatusBadGateway)
 		return
 	}
-	defer resp.Close()
+	defer resp.Body.Close()
 
-	for key, values := range resp.Headers {
+	for key, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Add(key, value)
 		}
 	}
 
 	w.WriteHeader(resp.StatusCode)
-
 	io.Copy(w, resp.Body)
 }
 
