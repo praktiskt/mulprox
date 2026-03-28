@@ -1,8 +1,10 @@
 package proxy
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -10,11 +12,17 @@ import (
 	"net/http"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
 	"github.com/praktiskt/mulprox/internal/stats"
 	"golang.org/x/net/proxy"
+)
+
+const (
+	maxRetries  = 3
+	copyBufSize = 32 * 1024
 )
 
 type ProxyAuth struct {
@@ -59,7 +67,7 @@ var transportPool = sync.Pool{
 
 var bufferPool = sync.Pool{
 	New: func() interface{} {
-		return make([]byte, 32*1024)
+		return make([]byte, copyBufSize)
 	},
 }
 
@@ -81,24 +89,13 @@ func New(logger *slog.Logger, timeout time.Duration, mullvad *mullvad.Provider, 
 	}
 }
 
-func (h *Handler) getTransport(socksDialer proxy.Dialer) *http.Transport {
-	t := transportPool.Get().(*http.Transport)
-	t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		return socksDialer.Dial(network, addr)
-	}
-	t.TLSHandshakeTimeout = h.timeout
-	t.DisableKeepAlives = false
-	t.MaxIdleConnsPerHost = 4
-	return t
-}
-
-func (h *Handler) putTransport(t *http.Transport) {
-	t.DialContext = nil
-	transportPool.Put(t)
-}
-
+// ServeHTTP dispatches to CONNECT tunneling or regular HTTP proxying.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	h.logger.Debug("proxy handler received", slog.String("method", r.Method), slog.String("url", r.URL.String()), slog.String("host", r.Host), slog.String("path", r.URL.Path))
+	h.logger.Debug("proxy handler received",
+		slog.String("method", r.Method),
+		slog.String("url", r.URL.String()),
+		slog.String("host", r.Host),
+		slog.String("path", r.URL.Path))
 
 	if h.httpsOnly && r.Method != http.MethodConnect {
 		http.Error(w, "HTTPS only", http.StatusForbidden)
@@ -106,52 +103,14 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if r.Method == http.MethodConnect {
-		h.handleConnectHTTP(w, r)
+		h.handleConnect(w, r)
 		return
 	}
 
 	h.handleHTTP(w, r)
 }
 
-func (h *Handler) getSOCKS5AddrFromRequest(r *http.Request) (string, string, error) {
-	filter := mullvad.Filter{}
-
-	if v := r.Header.Get("Proxy-Authorization"); v != "" {
-		var auth ProxyAuth
-		if err := json.Unmarshal([]byte(v), &auth); err != nil {
-			return "", "", fmt.Errorf("invalid Proxy-Authorization JSON: %w", err)
-		}
-		auth.Apply(&filter)
-	}
-
-	if filter.Country == "" && filter.City == "" && filter.Owned == nil &&
-		filter.Provider == "" && filter.MinSpeed == 0 && !filter.Multihop && filter.Seed == 0 {
-		server, err := h.mullvad.GetFilteredServer(filter)
-		if err != nil {
-			return "", "", err
-		}
-		if h.stats != nil {
-			h.stats.SetRemoteMetadata(server.Hostname, server.Hostname, server.Country, server.City)
-		}
-		return fmt.Sprintf("%s:%d", server.SOCKS5, server.SOCKSPort), server.Hostname, nil
-	}
-
-	server, err := h.mullvad.GetFilteredServer(filter)
-	if err != nil {
-		return "", "", err
-	}
-	if h.stats != nil {
-		h.stats.SetRemoteMetadata(server.Hostname, server.Hostname, server.Country, server.City)
-	}
-	return fmt.Sprintf("%s:%d", server.SOCKS5, server.SOCKSPort), server.Hostname, nil
-}
-
-func (h *Handler) copyResponseBody(w http.ResponseWriter, body io.Reader) {
-	buf := bufferPool.Get().([]byte)
-	defer bufferPool.Put(buf)
-	io.CopyBuffer(w, body, buf)
-}
-
+// handleHTTP proxies a regular HTTP request.
 func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	targetURL := r.URL.String()
 
@@ -167,11 +126,9 @@ func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	targetURL = strings.TrimPrefix(targetURL, "/")
-
 	if targetURL == "" {
 		targetURL = "/"
 	}
-
 	if !strings.HasPrefix(targetURL, "http://") && !strings.HasPrefix(targetURL, "https://") {
 		targetURL = "https://" + targetURL
 	}
@@ -181,60 +138,90 @@ func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
 	defer cancel()
 
-	h.proxyRequestHTTP(ctx, w, r, targetURL)
+	h.proxyHTTP(ctx, w, r, targetURL)
 }
 
-func (h *Handler) proxyRequestHTTP(ctx context.Context, w http.ResponseWriter, r *http.Request, targetURL string) {
-	socksAddr, remoteID, err := h.getSOCKS5AddrFromRequest(r)
+// proxyHTTP performs the HTTP proxy request with retries on transient errors.
+func (h *Handler) proxyHTTP(ctx context.Context, w http.ResponseWriter, r *http.Request, targetURL string) {
+	body, err := h.readBody(r)
 	if err != nil {
-		h.logger.Error("failed to get Mullvad server", slog.String("error", err.Error()))
-		http.Error(w, "failed to create proxy session", http.StatusServiceUnavailable)
+		http.Error(w, "failed to read request body", http.StatusBadRequest)
 		return
+	}
+
+	var lastErr error
+
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		resp, remoteID, err := h.roundTrip(ctx, r, targetURL, body)
+		if err != nil {
+			if ctx.Err() != nil {
+				return // context canceled or timed out; client already gone
+			}
+			if !isRetryable(err) {
+				h.logAndRespond(w, remoteID, err)
+				return
+			}
+			lastErr = err
+			continue
+		}
+
+		defer resp.Body.Close()
+		h.writeResponse(w, resp, remoteID)
+		return
+	}
+
+	if ctx.Err() != nil {
+		return
+	}
+	h.logger.Error("proxy request exhausted retries",
+		slog.String("error", lastErr.Error()),
+		slog.Int("attempts", maxRetries))
+	http.Error(w, "failed to reach target", http.StatusBadGateway)
+}
+
+// roundTrip performs a single proxy attempt: resolves a SOCKS5 server, builds
+// a transport, and executes the request.
+func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL string, body []byte) (*http.Response, string, error) {
+	socksAddr, remoteID, err := h.resolveSOCKS5(r)
+	if err != nil {
+		return nil, "", err
 	}
 
 	socksDialer, err := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
 	if err != nil {
-		h.logger.Error("failed to create SOCKS5 dialer", slog.String("error", err.Error()))
-		if h.stats != nil && remoteID != "" {
-			h.stats.RecordError(remoteID)
-		}
-		http.Error(w, "failed to create proxy session", http.StatusServiceUnavailable)
-		return
+		return nil, remoteID, err
 	}
 
-	transport := h.getTransport(socksDialer)
-	defer h.putTransport(transport)
+	tr := h.getTransport(socksDialer)
+	defer h.putTransport(tr)
 
-	req, err := http.NewRequestWithContext(ctx, r.Method, targetURL, r.Body)
+	var reqBody io.Reader
+	if body != nil {
+		reqBody = bytes.NewReader(body)
+	}
+
+	req, err := http.NewRequestWithContext(ctx, r.Method, targetURL, reqBody)
 	if err != nil {
-		h.logger.Error("failed to create request", slog.String("error", err.Error()))
-		http.Error(w, "failed to create request", http.StatusBadRequest)
-		return
+		return nil, remoteID, err
 	}
 	for key, values := range r.Header {
 		req.Header[key] = values
 	}
 
-	resp, err := transport.RoundTrip(req)
+	resp, err := tr.RoundTrip(req)
 	if err != nil {
-		if ctx.Err() != nil {
-			return
-		}
-		h.logger.Error("failed to proxy request", slog.String("error", err.Error()))
-		if h.stats != nil && remoteID != "" {
-			h.stats.RecordError(remoteID)
-		}
-		http.Error(w, "failed to reach target", http.StatusBadGateway)
-		return
+		return nil, remoteID, err
 	}
-	defer resp.Body.Close()
+	return resp, remoteID, nil
+}
 
+// writeResponse copies the upstream response to the client and records stats.
+func (h *Handler) writeResponse(w http.ResponseWriter, resp *http.Response, remoteID string) {
 	for key, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Add(key, value)
 		}
 	}
-
 	w.WriteHeader(resp.StatusCode)
 
 	if h.stats != nil && remoteID != "" {
@@ -247,7 +234,9 @@ func (h *Handler) proxyRequestHTTP(ctx context.Context, w http.ResponseWriter, r
 	}
 }
 
-func (h *Handler) handleConnectHTTP(w http.ResponseWriter, r *http.Request) {
+// handleConnect handles CONNECT requests by tunneling bytes between client
+// and the upstream SOCKS5 target.
+func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
 	if host == "" {
 		host = r.URL.Host
@@ -259,7 +248,7 @@ func (h *Handler) handleConnectHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	socksAddr, remoteID, err := h.getSOCKS5AddrFromRequest(r)
+	socksAddr, remoteID, err := h.resolveSOCKS5(r)
 	if err != nil {
 		h.logger.Error("failed to get Mullvad server", slog.String("error", err.Error()))
 		http.Error(w, "failed to create proxy session", http.StatusServiceUnavailable)
@@ -309,6 +298,7 @@ func (h *Handler) handleConnectHTTP(w http.ResponseWriter, r *http.Request) {
 	h.tunnel(clientConn, targetConn)
 }
 
+// tunnel copies data bidirectionally between client and target connections.
 func (h *Handler) tunnel(clientConn, targetConn net.Conn) {
 	buf := bufferPool.Get().([]byte)
 	defer bufferPool.Put(buf)
@@ -328,4 +318,84 @@ func (h *Handler) tunnel(clientConn, targetConn net.Conn) {
 	}()
 
 	<-errc
+}
+
+// resolveSOCKS5 picks a Mullvad SOCKS5 server based on the request's
+// Proxy-Authorization header and returns its address and identifier.
+func (h *Handler) resolveSOCKS5(r *http.Request) (addr, remoteID string, err error) {
+	filter := mullvad.Filter{}
+
+	if v := r.Header.Get("Proxy-Authorization"); v != "" {
+		var auth ProxyAuth
+		if err := json.Unmarshal([]byte(v), &auth); err != nil {
+			return "", "", fmt.Errorf("invalid Proxy-Authorization JSON: %w", err)
+		}
+		auth.Apply(&filter)
+	}
+
+	server, err := h.mullvad.GetFilteredServer(filter)
+	if err != nil {
+		return "", "", err
+	}
+
+	if h.stats != nil {
+		h.stats.SetRemoteMetadata(server.Hostname, server.Hostname, server.Country, server.City)
+	}
+
+	return fmt.Sprintf("%s:%d", server.SOCKS5, server.SOCKSPort), server.Hostname, nil
+}
+
+// getTransport returns a pooled http.Transport configured to dial through the
+// given SOCKS5 proxy. Connections are not reused (DisableKeepAlives) so each
+// request gets a fresh tunnel.
+func (h *Handler) getTransport(dialer proxy.Dialer) *http.Transport {
+	t := transportPool.Get().(*http.Transport)
+	t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		return dialer.Dial(network, addr)
+	}
+	t.TLSHandshakeTimeout = h.timeout
+	t.DisableKeepAlives = true
+	return t
+}
+
+// putTransport flushes idle connections and returns the transport to the pool.
+func (h *Handler) putTransport(t *http.Transport) {
+	t.CloseIdleConnections()
+	t.DialContext = nil
+	transportPool.Put(t)
+}
+
+// readBody buffers the request body so it can be replayed across retries.
+func (h *Handler) readBody(r *http.Request) ([]byte, error) {
+	if r.Body == nil {
+		return nil, nil
+	}
+	return io.ReadAll(r.Body)
+}
+
+// logAndRespond logs a proxy error, records stats, and writes a 502 response.
+func (h *Handler) logAndRespond(w http.ResponseWriter, remoteID string, err error) {
+	h.logger.Error("proxy request failed", slog.String("error", err.Error()))
+	if h.stats != nil && remoteID != "" {
+		h.stats.RecordError(remoteID)
+	}
+	http.Error(w, "failed to reach target", http.StatusBadGateway)
+}
+
+// isRetryable reports whether the error is likely transient and the request
+// should be tried again with a fresh connection.
+func isRetryable(err error) bool {
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	if errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.ECONNABORTED) ||
+		errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	return false
 }
