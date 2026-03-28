@@ -1,20 +1,22 @@
-{{if .}}
+{{$sort := .Sort}}
+{{$query := .Query}}
+{{if .Remotes}}
 <table>
 	<thead>
 		<tr>
-			<th>Hostname</th>
-			<th>Country</th>
-			<th>City</th>
-			<th>Egress IP</th>
-			<th>Status</th>
-			<th>Latency</th>
-			<th>Requests</th>
-			<th>Errors</th>
-			<th>Last Used</th>
+			<th><a href="#" class="sort-link" data-sort="hostname">Hostname {{sortIcon "hostname" $sort}}</a></th>
+			<th><a href="#" class="sort-link" data-sort="country">Country {{sortIcon "country" $sort}}</a></th>
+			<th><a href="#" class="sort-link" data-sort="city">City {{sortIcon "city" $sort}}</a></th>
+			<th><a href="#" class="sort-link" data-sort="egress_ip">Egress IP {{sortIcon "egress_ip" $sort}}</a></th>
+			<th><a href="#" class="sort-link" data-sort="status">Status {{sortIcon "status" $sort}}</a></th>
+			<th><a href="#" class="sort-link" data-sort="latency">Latency {{sortIcon "latency" $sort}}</a></th>
+			<th><a href="#" class="sort-link" data-sort="requests">Requests {{sortIcon "requests" $sort}}</a></th>
+			<th><a href="#" class="sort-link" data-sort="errors">Errors {{sortIcon "errors" $sort}}</a></th>
+			<th><a href="#" class="sort-link" data-sort="last_used">Last Used {{sortIcon "last_used" $sort}}</a></th>
 		</tr>
 	</thead>
 	<tbody>
-		{{range .}}
+		{{range .Remotes}}
 		<tr>
 			<td>{{.Hostname}}</td>
 			<td>{{.Country}}</td>
@@ -37,6 +39,7 @@
 		{{end}}
 	</tbody>
 </table>
+{{if not .IsSorting}}<p class="showing-used">Showing used proxies only. Click any column header to sort and show all.</p>{{end}}
 {{else}}
 <div class="empty">No proxies found</div>
 {{end}}

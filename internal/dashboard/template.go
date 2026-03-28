@@ -22,6 +22,7 @@ func init() {
 		"formatLatency": formatLatency,
 		"formatTime":    formatTime,
 		"latencyClass":  latencyClass,
+		"sortIcon":      sortIcon,
 	}
 
 	dashboardContent, err := templatesFS.ReadFile("templates/dashboard.html")
@@ -82,8 +83,16 @@ func formatTime(t time.Time) string {
 	return t.Format("15:04:05")
 }
 
+func sortIcon(field string, cfg sortConfig) string {
+	if cfg.field != field {
+		return ""
+	}
+	if cfg.dir == "asc" {
+		return "▲"
+	}
+	return "▼"
+}
+
 type Data struct {
 	Aggregated stats.AggregatedStats
-	Remotes    []*stats.RemoteStats
-	Query      string
 }

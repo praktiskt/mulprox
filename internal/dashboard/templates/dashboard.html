@@ -182,6 +182,24 @@
 			font-size: 0.9rem;
 			color: var(--subtext0);
 		}
+
+		.sort-link {
+			color: var(--subtext1);
+			text-decoration: none;
+			cursor: pointer;
+		}
+
+		.sort-link:hover {
+			color: var(--blue);
+		}
+
+		.showing-used {
+			text-align: center;
+			padding: 12px;
+			color: var(--overlay0);
+			font-size: 0.85rem;
+			background: var(--surface1);
+		}
 		
 		.latency {
 			font-family: 'Monaco', 'Menlo', monospace;
@@ -257,5 +275,49 @@
 			<div class="loading">Loading proxies...</div>
 		</div>
 	</div>
+
+	<script>
+		let sortState = { field: '', dir: 'desc' };
+		
+		document.body.addEventListener('click', function(e) {
+			const link = e.target.closest('.sort-link');
+			if (link) {
+				e.preventDefault();
+				const sortField = link.dataset.sort;
+				
+				if (sortState.field === sortField) {
+					sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
+				} else {
+					sortState.field = sortField;
+					sortState.dir = 'desc';
+				}
+				
+				const table = document.getElementById('proxies-table');
+				const searchBox = document.querySelector('.search-box');
+				const query = searchBox ? searchBox.value : '';
+				
+				const url = '/dashboard/proxies?q=' + encodeURIComponent(query) + 
+					'&sort=' + sortState.field + '&dir=' + sortState.dir;
+				
+				table.innerHTML = '<div class="loading">Loading...</div>';
+				fetch(url).then(r => r.text()).then(html => {
+					table.innerHTML = html;
+				});
+			}
+		});
+
+		const searchBox = document.querySelector('.search-box');
+		if (searchBox) {
+			searchBox.addEventListener('input', function(e) {
+				const url = '/dashboard/proxies?q=' + encodeURIComponent(e.target.value) + 
+					'&sort=' + sortState.field + '&dir=' + sortState.dir;
+				const table = document.getElementById('proxies-table');
+				table.innerHTML = '<div class="loading">Loading...</div>';
+				fetch(url).then(r => r.text()).then(html => {
+					table.innerHTML = html;
+				});
+			});
+		}
+	</script>
 </body>
 </html>
