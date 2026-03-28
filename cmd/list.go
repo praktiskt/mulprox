@@ -15,9 +15,18 @@ var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List available Mullvad servers",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		country, _ := cmd.Flags().GetString("country")
-		city, _ := cmd.Flags().GetString("city")
-		limit, _ := cmd.Flags().GetInt("limit")
+		country, err := cmd.Flags().GetString("country")
+		if err != nil {
+			return fmt.Errorf("failed to get country flag: %w", err)
+		}
+		city, err := cmd.Flags().GetString("city")
+		if err != nil {
+			return fmt.Errorf("failed to get city flag: %w", err)
+		}
+		limit, err := cmd.Flags().GetInt("limit")
+		if err != nil {
+			return fmt.Errorf("failed to get limit flag: %w", err)
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()

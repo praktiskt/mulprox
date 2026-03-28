@@ -58,8 +58,7 @@ var transportPool = sync.Pool{
 
 var bufferPool = sync.Pool{
 	New: func() interface{} {
-		buf := make([]byte, 32*1024)
-		return &buf
+		return make([]byte, 32*1024)
 	},
 }
 
@@ -129,9 +128,9 @@ func (h *Handler) getSOCKS5AddrFromRequest(r *http.Request) (string, error) {
 }
 
 func (h *Handler) copyResponseBody(w http.ResponseWriter, body io.Reader) {
-	buf := bufferPool.Get().(*[]byte)
+	buf := bufferPool.Get().([]byte)
 	defer bufferPool.Put(buf)
-	io.CopyBuffer(w, body, *buf)
+	io.CopyBuffer(w, body, buf)
 }
 
 func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
@@ -239,6 +238,7 @@ func (h *Handler) handleConnectHTTP(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to connect to target", http.StatusBadGateway)
 		return
 	}
+	defer targetConn.Close()
 
 	w.Header().Set("Connection", "Keep-Alive")
 	w.WriteHeader(http.StatusOK)
@@ -259,19 +259,19 @@ func (h *Handler) handleConnectHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) tunnel(clientConn, targetConn net.Conn) {
-	buf := bufferPool.Get().(*[]byte)
+	buf := bufferPool.Get().([]byte)
 	defer bufferPool.Put(buf)
 
 	errc := make(chan error, 2)
 
 	go func() {
-		_, err := io.CopyBuffer(targetConn, clientConn, *buf)
+		_, err := io.CopyBuffer(targetConn, clientConn, buf)
 		targetConn.Close()
 		errc <- err
 	}()
 
 	go func() {
-		_, err := io.CopyBuffer(clientConn, targetConn, *buf)
+		_, err := io.CopyBuffer(clientConn, targetConn, buf)
 		clientConn.Close()
 		errc <- err
 	}()

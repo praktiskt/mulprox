@@ -13,31 +13,32 @@ export HTTP_PROXY=http://localhost:8080
 curl https://ipinfo.io
 ```
 
-## Request Headers
+## Request Configuration
 
-Control server selection using `X-Mulprox-*` headers:
+Control server selection using the `Proxy-Authorization` header with JSON. This
+works for both HTTP and HTTPS (CONNECT) requests.
 
-| Header | Description | Example |
-|--------|-------------|---------|
-| `X-Mulprox-Country` | Filter by country | `Sweden`, `Germany` |
-| `X-Mulprox-City` | Filter by city | `Stockholm`, `Berlin` |
-| `X-Mulprox-Owned` | Only Mullvad-owned servers | `true` or `false` |
-| `X-Mulprox-Provider` | Filter by hosting provider | `M247`, `Leaseweb` |
-| `X-Mulprox-Speed` | Minimum server speed (Mbps) | `1000` |
-| `X-Mulprox-Multihop` | Allow multihop servers | `true` or `false` |
-| `X-Mulprox-Seed` | Deterministic server selection | `12345` |
+| Field | Description | Example |
+|-------|-------------|---------|
+| `country` | Filter by country | `"Sweden"` |
+| `city` | Filter by city | `"Stockholm"` |
+| `seed` | Deterministic server selection | `12345` |
+| `owned` | Only Mullvad-owned servers | `true` |
+| `provider` | Filter by hosting provider | `"M247"` |
+| `speed` | Minimum server speed (Mbps) | `1000` |
+| `multihop` | Allow multihop servers | `true` |
 
-Examples:
+### Examples
 
 ```bash
 # Route through Sweden
-curl -H "X-Mulprox-Country: Sweden" http://localhost:8080/https://ipinfo.io
+curl -H "Proxy-Authorization: {\"country\":\"Sweden\"}" https://ipinfo.io
 
 # Deterministic IP (same seed = same server)
-curl -H "X-Mulprox-Seed: 12345" http://localhost:8080/https://ipinfo.io
+curl -H "Proxy-Authorization: {\"seed\":12345}" https://ipinfo.io
 
 # Combine filters
-curl -H "X-Mulprox-Country: Sweden" -H "X-Mulprox-Owned: true" http://localhost:8080/https://ipinfo.io
+curl -H "Proxy-Authorization: {\"country\":\"Sweden\",\"owned\":true}" https://ipinfo.io
 ```
 
 ## Commands

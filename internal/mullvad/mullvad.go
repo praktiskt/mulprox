@@ -56,12 +56,21 @@ type Provider struct {
 	statusCheckMu sync.RWMutex
 	httpClient    *client.Client
 	fetchGroup    singleflight.Group
+	rng           *rand.Rand
+	rngMu         sync.Mutex
 }
 
 func New() *Provider {
 	return &Provider{
 		httpClient: client.NewSession(preset),
+		rng:        rand.New(rand.NewSource(time.Now().UnixNano())),
 	}
+}
+
+func (p *Provider) randIntn(n int) int {
+	p.rngMu.Lock()
+	defer p.rngMu.Unlock()
+	return p.rng.Intn(n)
 }
 
 func (p *Provider) Session(ctx context.Context, timeout time.Duration) (*client.Client, error) {
@@ -72,7 +81,7 @@ func (p *Provider) Session(ctx context.Context, timeout time.Duration) (*client.
 
 	server := FallbackMullvad
 	if len(mullvadServers) > 0 {
-		s := mullvadServers[rand.Intn(len(mullvadServers))]
+		s := mullvadServers[p.randIntn(len(mullvadServers))]
 		server = fmt.Sprintf("%s:%d", s.SOCKS5, s.SOCKSPort)
 	}
 
@@ -110,7 +119,7 @@ func (p *Provider) RandomSOCKS5Addr() (string, error) {
 		return FallbackMullvad, nil
 	}
 
-	s := mullvadServers[rand.Intn(len(mullvadServers))]
+	s := mullvadServers[p.randIntn(len(mullvadServers))]
 	return fmt.Sprintf("%s:%d", s.SOCKS5, s.SOCKSPort), nil
 }
 
@@ -167,8 +176,7 @@ func (p *Provider) GetFilteredServer(filter Filter) (Server, error) {
 		return filtered[index], nil
 	}
 
-	s := filtered[rand.Intn(len(filtered))]
-	return s, nil
+	return filtered[p.randIntn(len(filtered))], nil
 }
 
 func (p *Provider) GetServerBySeed(seed int64) (Server, error) {
@@ -342,54 +350,39 @@ func parseMullvadRelays(html string) []Server {
 	return servers
 }
 
-func (p *Provider) GetServersByCountry(country string) []Server {
+func (p *Provider) filterServers(fn func(Server) bool) []Server {
 	p.mu.RLock()
 	defer p.mu.RUnlock()
 
 	var result []Server
 	for _, s := range p.mullvadList {
-		if strings.EqualFold(s.Country, country) {
+		if fn(s) {
 			result = append(result, s)
 		}
 	}
 	return result
+}
+
+func (p *Provider) GetServersByCountry(country string) []Server {
+	return p.filterServers(func(s Server) bool {
+		return strings.EqualFold(s.Country, country)
+	})
 }
 
 func (p *Provider) GetServersByCity(city string) []Server {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	var result []Server
-	for _, s := range p.mullvadList {
-		if strings.EqualFold(s.City, city) {
-			result = append(result, s)
-		}
-	}
-	return result
+	return p.filterServers(func(s Server) bool {
+		return strings.EqualFold(s.City, city)
+	})
 }
 
 func (p *Provider) GetOwnedServers() []Server {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	var result []Server
-	for _, s := range p.mullvadList {
-		if s.Owned {
-			result = append(result, s)
-		}
-	}
-	return result
+	return p.filterServers(func(s Server) bool {
+		return s.Owned
+	})
 }
 
 func (p *Provider) GetMultihopServers() []Server {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	var result []Server
-	for _, s := range p.mullvadList {
-		if s.Multihop > 0 {
-			result = append(result, s)
-		}
-	}
-	return result
+	return p.filterServers(func(s Server) bool {
+		return s.Multihop > 0
+	})
 }
