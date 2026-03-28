@@ -1,22 +1,19 @@
-FROM golang:1.26-alpine AS builder
-
+FROM golang:1.26 AS build
 WORKDIR /app
-
-COPY go.mod go.sum ./
+COPY go.mod .
+COPY go.sum .
 RUN go mod download
+COPY . /app
+ENV LDFLAGS="-s -w -buildid="
+RUN --mount=type=cache,target=/root/.cache/go-build \
+    GOOS=linux go build -trimpath -ldflags="$LDFLAGS" -o /dist/app
 
-COPY . .
+# This solves C dependencies
+RUN ldd /dist/app | tr -s [:blank:] '\n' | grep ^/ | xargs -I % install -D % /dist/%
+RUN ln -s ld-musl-x86_64.so.1 /dist/lib/libc.musl-x86_64.so.1
 
-RUN CGO_ENABLED=0 GOOS=linux go build -o /mulprox .
-
-FROM alpine:latest
-
-RUN apk --no-cache add ca-certificates
-
-WORKDIR /app
-
-COPY --from=builder /mulprox .
-
-EXPOSE 8080
-
-CMD ["./mulprox", "serve"]
+FROM scratch
+COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=build /dist /
+USER 65534
+ENTRYPOINT [ "/app" ]
