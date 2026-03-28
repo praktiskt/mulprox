@@ -7,11 +7,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
+	"github.com/praktiskt/mulprox/internal/dashboard"
 	"github.com/praktiskt/mulprox/internal/mullvad"
 	"github.com/praktiskt/mulprox/internal/proxy"
+	"github.com/praktiskt/mulprox/internal/stats"
 
 	"github.com/spf13/cobra"
 )
@@ -34,14 +37,30 @@ var serveCmd = &cobra.Command{
 		}
 
 		mullvadProvider := mullvad.New()
-		proxyHandler := proxy.New(logger, timeout, mullvadProvider, httpsOnly)
+		statsStore := stats.NewInMemoryStore()
+		statsCollector := stats.NewCollector(logger, statsStore, mullvadProvider, stats.DefaultConfig())
+
+		ctx, cancelStats := context.WithCancel(context.Background())
+		statsCollector.Start(ctx)
+
+		proxyHandler := proxy.New(logger, timeout, mullvadProvider, httpsOnly, statsStore)
+		dashboardHandler := dashboard.New(statsStore)
+
+		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			logger.Debug("request", slog.String("method", r.Method), slog.String("url", r.URL.String()), slog.String("path", r.URL.Path))
+			if strings.HasPrefix(r.URL.Path, "/dashboard") {
+				dashboardHandler.ServeHTTP(w, r)
+			} else {
+				proxyHandler.ServeHTTP(w, r)
+			}
+		})
 
 		addr := fmt.Sprintf("%s:%d", host, port)
 		logger.Info("proxy server listening", slog.String("addr", addr))
 
 		s := &http.Server{
 			Addr:              addr,
-			Handler:           proxyHandler,
+			Handler:           handler,
 			ReadTimeout:       30 * time.Second,
 			ReadHeaderTimeout: 10 * time.Second,
 			WriteTimeout:      60 * time.Second,
@@ -59,9 +78,15 @@ var serveCmd = &cobra.Command{
 		<-quit
 
 		logger.Info("shutting down server")
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		defer cancel()
-		return s.Shutdown(ctx)
+
+		cancelStats()
+		statsCollector.Stop()
+
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		s.Shutdown(shutdownCtx)
+		cancel()
+
+		return nil
 	},
 }
 

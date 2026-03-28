@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
+	"github.com/praktiskt/mulprox/internal/stats"
 	"golang.org/x/net/proxy"
 )
 
@@ -67,14 +68,16 @@ type Handler struct {
 	timeout   time.Duration
 	mullvad   *mullvad.Provider
 	httpsOnly bool
+	stats     stats.Store
 }
 
-func New(logger *slog.Logger, timeout time.Duration, mullvad *mullvad.Provider, httpsOnly bool) *Handler {
+func New(logger *slog.Logger, timeout time.Duration, mullvad *mullvad.Provider, httpsOnly bool, statsStore stats.Store) *Handler {
 	return &Handler{
 		logger:    logger,
 		timeout:   timeout,
 		mullvad:   mullvad,
 		httpsOnly: httpsOnly,
+		stats:     statsStore,
 	}
 }
 
@@ -95,12 +98,12 @@ func (h *Handler) putTransport(t *http.Transport) {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.logger.Debug("proxy handler received", slog.String("method", r.Method), slog.String("url", r.URL.String()), slog.String("host", r.Host), slog.String("path", r.URL.Path))
+
 	if h.httpsOnly && r.Method != http.MethodConnect {
 		http.Error(w, "HTTPS only", http.StatusForbidden)
 		return
 	}
-
-	h.logger.Debug("request", slog.String("method", r.Method), slog.String("url", r.URL.String()), slog.String("host", r.Host))
 
 	if r.Method == http.MethodConnect {
 		h.handleConnectHTTP(w, r)
@@ -110,28 +113,37 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.handleHTTP(w, r)
 }
 
-func (h *Handler) getSOCKS5AddrFromRequest(r *http.Request) (string, error) {
+func (h *Handler) getSOCKS5AddrFromRequest(r *http.Request) (string, string, error) {
 	filter := mullvad.Filter{}
 
-	// Parse Proxy-Authorization header (JSON)
 	if v := r.Header.Get("Proxy-Authorization"); v != "" {
 		var auth ProxyAuth
 		if err := json.Unmarshal([]byte(v), &auth); err != nil {
-			return "", fmt.Errorf("invalid Proxy-Authorization JSON: %w", err)
+			return "", "", fmt.Errorf("invalid Proxy-Authorization JSON: %w", err)
 		}
 		auth.Apply(&filter)
 	}
 
 	if filter.Country == "" && filter.City == "" && filter.Owned == nil &&
 		filter.Provider == "" && filter.MinSpeed == 0 && !filter.Multihop && filter.Seed == 0 {
-		return h.mullvad.RandomSOCKS5Addr()
+		server, err := h.mullvad.GetFilteredServer(filter)
+		if err != nil {
+			return "", "", err
+		}
+		if h.stats != nil {
+			h.stats.SetRemoteMetadata(server.Hostname, server.Hostname, server.Country, server.City)
+		}
+		return fmt.Sprintf("%s:%d", server.SOCKS5, server.SOCKSPort), server.Hostname, nil
 	}
 
 	server, err := h.mullvad.GetFilteredServer(filter)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
-	return fmt.Sprintf("%s:%d", server.SOCKS5, server.SOCKSPort), nil
+	if h.stats != nil {
+		h.stats.SetRemoteMetadata(server.Hostname, server.Hostname, server.Country, server.City)
+	}
+	return fmt.Sprintf("%s:%d", server.SOCKS5, server.SOCKSPort), server.Hostname, nil
 }
 
 func (h *Handler) copyResponseBody(w http.ResponseWriter, body io.Reader) {
@@ -142,6 +154,11 @@ func (h *Handler) copyResponseBody(w http.ResponseWriter, body io.Reader) {
 
 func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	targetURL := r.URL.String()
+
+	if r.URL.Path == "/favicon.ico" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 
 	if targetURL == "/" && r.Method == http.MethodGet {
 		w.Header().Set("Content-Type", "text/plain")
@@ -168,7 +185,7 @@ func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) proxyRequestHTTP(ctx context.Context, w http.ResponseWriter, r *http.Request, targetURL string) {
-	socksAddr, err := h.getSOCKS5AddrFromRequest(r)
+	socksAddr, remoteID, err := h.getSOCKS5AddrFromRequest(r)
 	if err != nil {
 		h.logger.Error("failed to get Mullvad server", slog.String("error", err.Error()))
 		http.Error(w, "failed to create proxy session", http.StatusServiceUnavailable)
@@ -178,6 +195,9 @@ func (h *Handler) proxyRequestHTTP(ctx context.Context, w http.ResponseWriter, r
 	socksDialer, err := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
 	if err != nil {
 		h.logger.Error("failed to create SOCKS5 dialer", slog.String("error", err.Error()))
+		if h.stats != nil && remoteID != "" {
+			h.stats.RecordError(remoteID)
+		}
 		http.Error(w, "failed to create proxy session", http.StatusServiceUnavailable)
 		return
 	}
@@ -197,7 +217,13 @@ func (h *Handler) proxyRequestHTTP(ctx context.Context, w http.ResponseWriter, r
 
 	resp, err := transport.RoundTrip(req)
 	if err != nil {
+		if ctx.Err() != nil {
+			return
+		}
 		h.logger.Error("failed to proxy request", slog.String("error", err.Error()))
+		if h.stats != nil && remoteID != "" {
+			h.stats.RecordError(remoteID)
+		}
 		http.Error(w, "failed to reach target", http.StatusBadGateway)
 		return
 	}
@@ -210,6 +236,11 @@ func (h *Handler) proxyRequestHTTP(ctx context.Context, w http.ResponseWriter, r
 	}
 
 	w.WriteHeader(resp.StatusCode)
+
+	if h.stats != nil && remoteID != "" {
+		h.stats.RecordRequest(remoteID)
+	}
+
 	h.copyResponseBody(w, resp.Body)
 }
 
@@ -225,7 +256,7 @@ func (h *Handler) handleConnectHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	socksAddr, err := h.getSOCKS5AddrFromRequest(r)
+	socksAddr, remoteID, err := h.getSOCKS5AddrFromRequest(r)
 	if err != nil {
 		h.logger.Error("failed to get Mullvad server", slog.String("error", err.Error()))
 		http.Error(w, "failed to create proxy session", http.StatusServiceUnavailable)
@@ -235,6 +266,9 @@ func (h *Handler) handleConnectHTTP(w http.ResponseWriter, r *http.Request) {
 	dialer, err := h.mullvad.SOCKS5DialerFromAddr(socksAddr, h.timeout)
 	if err != nil {
 		h.logger.Error("failed to create Mullvad session", slog.String("error", err.Error()))
+		if h.stats != nil && remoteID != "" {
+			h.stats.RecordError(remoteID)
+		}
 		http.Error(w, "failed to create proxy session", http.StatusServiceUnavailable)
 		return
 	}
@@ -242,6 +276,9 @@ func (h *Handler) handleConnectHTTP(w http.ResponseWriter, r *http.Request) {
 	targetConn, err := dialer.Dial("tcp", host)
 	if err != nil {
 		h.logger.Error("failed to connect to target", slog.String("error", err.Error()))
+		if h.stats != nil && remoteID != "" {
+			h.stats.RecordError(remoteID)
+		}
 		http.Error(w, "failed to connect to target", http.StatusBadGateway)
 		return
 	}
@@ -249,6 +286,10 @@ func (h *Handler) handleConnectHTTP(w http.ResponseWriter, r *http.Request) {
 
 	w.Header().Set("Connection", "Keep-Alive")
 	w.WriteHeader(http.StatusOK)
+
+	if h.stats != nil && remoteID != "" {
+		h.stats.RecordRequest(remoteID)
+	}
 
 	hij, ok := w.(http.Hijacker)
 	if !ok {

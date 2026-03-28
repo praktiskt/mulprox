@@ -1,0 +1,42 @@
+{{if .}}
+<table>
+	<thead>
+		<tr>
+			<th>Hostname</th>
+			<th>Country</th>
+			<th>City</th>
+			<th>Egress IP</th>
+			<th>Status</th>
+			<th>Latency</th>
+			<th>Requests</th>
+			<th>Errors</th>
+			<th>Last Used</th>
+		</tr>
+	</thead>
+	<tbody>
+		{{range .}}
+		<tr>
+			<td>{{.Hostname}}</td>
+			<td>{{.Country}}</td>
+			<td>{{.City}}</td>
+			<td class="ip">{{.EgressIP}}</td>
+			<td>
+				{{if .Health.Online}}
+				<span class="status-badge status-online">Online</span>
+				{{else}}
+				<span class="status-badge status-offline">Offline</span>
+				{{end}}
+			</td>
+			<td class="latency {{latencyClass .Health.PingMean}}">
+				{{if .Health.Online}}{{formatLatency .Health.PingMean}}{{else}}—{{end}}
+			</td>
+			<td>{{.RequestCount}}</td>
+			<td {{if gt .ErrorCount 0}}style="color: var(--red)"{{end}}>{{.ErrorCount}}</td>
+			<td>{{formatTime .LastUsed}}</td>
+		</tr>
+		{{end}}
+	</tbody>
+</table>
+{{else}}
+<div class="empty">No proxies found</div>
+{{end}}

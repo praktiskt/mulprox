@@ -13,6 +13,7 @@ import (
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
 	"github.com/praktiskt/mulprox/internal/proxy"
+	"github.com/praktiskt/mulprox/internal/stats"
 )
 
 func TestMullvadProvider(t *testing.T) {
@@ -259,7 +260,8 @@ func TestSeedDeterminism(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := proxy.New(logger, 30*time.Second, p, false)
+	statsStore := stats.NewInMemoryStore()
+	h := proxy.New(logger, 30*time.Second, p, false, statsStore)
 
 	// Create test server
 	ts := &http.Server{
@@ -349,7 +351,8 @@ func TestHTTPSOnlyMode(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := proxy.New(logger, 30*time.Second, p, true)
+	statsStore := stats.NewInMemoryStore()
+	h := proxy.New(logger, 30*time.Second, p, true, statsStore)
 
 	ts := &http.Server{
 		Handler:           h,
