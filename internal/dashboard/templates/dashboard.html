@@ -5,6 +5,7 @@
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Mulprox Dashboard</title>
 	<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+	<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 	<style>
 		:root {
 			--base: #1e1e2e;
@@ -79,20 +80,40 @@
 		
 		.stat-card {
 			background: var(--surface0);
-			border-radius: 12px;
-			padding: 20px;
+			border-radius: 8px;
+			padding: 12px;
 			border: 1px solid var(--surface1);
+			display: flex;
+			flex-direction: column;
+			gap: 4px;
+			text-align: center;
+		}
+
+		.stat-card .stat-row {
+			display: flex;
+			align-items: center;
+			gap: 8px;
+			margin-top: auto;
+		}
+
+		.stat-card .sparkline-container {
+			flex: 1;
+			height: 28px;
+		}
+
+		.stat-card .sparkline-container canvas {
+			width: 100% !important;
+			height: 28px !important;
 		}
 		
 		.stat-label {
 			color: var(--subtext1);
-			font-size: 0.85rem;
-			margin-bottom: 4px;
+			font-size: 0.75rem;
 		}
 		
 		.stat-value {
 			color: var(--text);
-			font-size: 1.8rem;
+			font-size: 1.3rem;
 			font-weight: 600;
 		}
 		
@@ -101,6 +122,10 @@
 		.stat-value.red { color: var(--red); }
 		.stat-value.blue { color: var(--blue); }
 		.stat-value.mauve { color: var(--mauve); }
+		.stat-value.peach { color: var(--peach); }
+		.stat-value.teal { color: var(--teal); }
+
+
 		
 		.search-box {
 			background: var(--surface0);
@@ -237,8 +262,20 @@
 		
 		.stats-partial {
 			display: grid;
-			grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-			gap: 16px;
+			grid-template-columns: repeat(6, 140px);
+			gap: 12px;
+		}
+
+		@media (max-width: 1000px) {
+			.stats-partial {
+				grid-template-columns: repeat(3, 1fr);
+			}
+		}
+
+		@media (max-width: 500px) {
+			.stats-partial {
+				grid-template-columns: repeat(2, 1fr);
+			}
 		}
 	</style>
 </head>
@@ -278,7 +315,138 @@
 
 	<script>
 		let sortState = { field: 'hostname', dir: 'asc' };
-		
+
+		const HISTORY_LENGTH = 60;
+		const history = {
+			requests: { values: [], prev: 0, chart: null, isRate: true },
+			active: { values: [], prev: 0, chart: null, isRate: false },
+			total: { values: [], prev: 0, chart: null, isRate: false },
+			errors: { values: [], prev: 0, chart: null, isRate: false },
+			sent: { values: [], prev: 0, chart: null, isRate: true },
+			recv: { values: [], prev: 0, chart: null, isRate: true },
+		};
+
+		const chartColors = {
+			blue: '#89b4fa',
+			green: '#a6e3a1',
+			mauve: '#cba6f7',
+			red: '#f38ba8',
+			peach: '#fab387',
+			teal: '#94e2d5',
+			text: '#cdd6f4',
+		};
+
+		function destroyCharts() {
+			Object.keys(history).forEach(key => {
+				if (history[key].chart) {
+					history[key].chart.destroy();
+					history[key].chart = null;
+				}
+			});
+		}
+
+		function initCharts() {
+			destroyCharts();
+			Object.keys(history).forEach(key => {
+				const canvas = document.getElementById('chart-' + key);
+				if (!canvas) return;
+				const ctx = canvas.getContext('2d');
+				let color = chartColors.blue;
+				if (key === 'active') color = chartColors.green;
+				if (key === 'total') color = chartColors.mauve;
+				if (key === 'errors') color = chartColors.red;
+				if (key === 'sent') color = chartColors.peach;
+				if (key === 'recv') color = chartColors.teal;
+
+				history[key].chart = new Chart(ctx, {
+					type: 'line',
+					data: {
+						labels: Array(HISTORY_LENGTH).fill(''),
+						datasets: [{
+							data: [],
+							borderColor: color,
+							backgroundColor: color + '33',
+							fill: true,
+							tension: 0.3,
+							pointRadius: 0,
+							hoverPointRadius: 4,
+							hoverPointBackgroundColor: color,
+							borderWidth: 2,
+						}]
+					},
+					options: {
+						responsive: true,
+						maintainAspectRatio: false,
+						plugins: { 
+							legend: { display: false },
+							tooltip: { 
+								enabled: true,
+								mode: 'index',
+								intersect: false,
+							}
+						},
+						scales: {
+							x: { display: false },
+							y: { display: false }
+						},
+						animation: { duration: 0 },
+						interaction: {
+							mode: 'nearest',
+							axis: 'x',
+							intersect: false
+						}
+					}
+				});
+			});
+		}
+
+
+
+		function formatRate(bytes) {
+			if (bytes < 1024) return bytes + ' B/s';
+			if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB/s';
+			if (bytes < 1024 * 1024 * 1024) return (bytes / 1024 / 1024).toFixed(0) + ' MB/s';
+			return (bytes / 1024 / 1024 / 1024).toFixed(0) + ' GB/s';
+		}
+
+		function updateCharts() {
+			Object.keys(history).forEach(key => {
+				const el = document.querySelector(`[data-rate="${key}"]`);
+				if (!el) return;
+
+				const current = parseFloat(el.dataset.raw);
+				if (isNaN(current)) return;
+
+				const h = history[key];
+				let val;
+
+				if (h.prev === 0) {
+					val = 0;
+				} else if (h.isRate) {
+					val = Math.max(0, current - h.prev);
+				} else {
+					val = current;
+				}
+				h.prev = current;
+				h.values.push(val);
+
+				if (h.values.length > HISTORY_LENGTH) h.values.shift();
+
+				if (h.chart) {
+					h.chart.data.datasets[0].data = h.values;
+					h.chart.update('none');
+				}
+
+				if (key === 'sent' || key === 'recv') {
+					el.textContent = formatRate(val);
+				} else if (key === 'requests') {
+					el.textContent = Math.round(val) + '/s';
+				} else {
+					el.textContent = String(Math.round(val));
+				}
+			});
+		}
+
 		function refreshProxies() {
 			const table = document.getElementById('proxies-table');
 			const searchBox = document.querySelector('.search-box');
@@ -301,9 +469,13 @@
 			const stats = document.getElementById('stats-grid');
 			fetch('/dashboard/stats').then(r => r.text()).then(html => {
 				stats.innerHTML = html;
+				initCharts();
+				updateCharts();
 			});
 		}
 		
+		refreshStats();
+		refreshProxies();
 		setInterval(refreshStats, 1000);
 		setInterval(refreshProxies, 1000);
 		
