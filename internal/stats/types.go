@@ -89,7 +89,9 @@ func (s *RemoteStore) GetAll() []*RemoteStats {
 
 	result := make([]*RemoteStats, 0, len(s.remotes))
 	for _, stats := range s.remotes {
+		stats.mu.Lock()
 		result = append(result, stats)
+		stats.mu.Unlock()
 	}
 	return result
 }
@@ -102,6 +104,7 @@ func (s *RemoteStore) GetAggregated() AggregatedStats {
 	agg.RequestsPerRemote = make(map[string]uint64)
 
 	for _, rs := range s.remotes {
+		rs.mu.Lock()
 		agg.TotalRequests += rs.RequestCount
 		agg.TotalBytesSent += rs.BytesSent
 		agg.TotalBytesRecv += rs.BytesRecv
@@ -110,6 +113,7 @@ func (s *RemoteStore) GetAggregated() AggregatedStats {
 			agg.ActiveRemotes++
 		}
 		agg.RequestsPerRemote[rs.RemoteID] = rs.RequestCount
+		rs.mu.Unlock()
 	}
 
 	agg.TotalRemotes = len(s.remotes)
