@@ -59,11 +59,11 @@ func (h *Handler) serveProxies(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		remotes = used
+		remotes = sortRemotes(remotes, "hostname", "asc")
 	} else if isSearching {
 		remotes = filterRemotes(remotes, query)
-	}
-
-	if sortField != "" {
+		remotes = sortRemotes(remotes, "hostname", "asc")
+	} else if sortField != "" {
 		remotes = sortRemotes(remotes, sortField, sortDir)
 	}
 
@@ -82,28 +82,51 @@ func sortRemotes(remotes []*stats.RemoteStats, field, dir string) []*stats.Remot
 	copy(sorted, remotes)
 
 	less := func(i, j int) bool {
+		var cmp int
 		switch field {
 		case "hostname":
-			return sorted[i].Hostname < sorted[j].Hostname
+			cmp = strings.Compare(sorted[i].Hostname, sorted[j].Hostname)
 		case "country":
-			return sorted[i].Country < sorted[j].Country
+			cmp = strings.Compare(sorted[i].Country, sorted[j].Country)
 		case "city":
-			return sorted[i].City < sorted[j].City
+			cmp = strings.Compare(sorted[i].City, sorted[j].City)
 		case "egress_ip":
-			return sorted[i].EgressIP < sorted[j].EgressIP
+			cmp = strings.Compare(sorted[i].EgressIP, sorted[j].EgressIP)
 		case "status":
-			return sorted[i].Health.Online && !sorted[j].Health.Online
+			if sorted[i].Health.Online != sorted[j].Health.Online {
+				return sorted[i].Health.Online && !sorted[j].Health.Online
+			}
+			cmp = 0
 		case "latency":
-			return sorted[i].Health.PingMean < sorted[j].Health.PingMean
+			if sorted[i].Health.PingMean != sorted[j].Health.PingMean {
+				return sorted[i].Health.PingMean < sorted[j].Health.PingMean
+			}
+			cmp = 0
 		case "requests":
-			return sorted[i].RequestCount < sorted[j].RequestCount
+			if sorted[i].RequestCount != sorted[j].RequestCount {
+				return sorted[i].RequestCount < sorted[j].RequestCount
+			}
+			cmp = 0
 		case "errors":
-			return sorted[i].ErrorCount < sorted[j].ErrorCount
+			if sorted[i].ErrorCount != sorted[j].ErrorCount {
+				return sorted[i].ErrorCount < sorted[j].ErrorCount
+			}
+			cmp = 0
 		case "last_used":
-			return sorted[i].LastUsed.Before(sorted[j].LastUsed)
+			if !sorted[i].LastUsed.Equal(sorted[j].LastUsed) {
+				return sorted[i].LastUsed.Before(sorted[j].LastUsed)
+			}
+			cmp = 0
 		default:
-			return sorted[i].RequestCount < sorted[j].RequestCount
+			if sorted[i].RequestCount != sorted[j].RequestCount {
+				return sorted[i].RequestCount < sorted[j].RequestCount
+			}
+			cmp = 0
 		}
+		if cmp == 0 {
+			cmp = strings.Compare(sorted[i].Hostname, sorted[j].Hostname)
+		}
+		return cmp < 0
 	}
 
 	if dir == "asc" {

@@ -277,7 +277,35 @@
 	</div>
 
 	<script>
-		let sortState = { field: '', dir: 'desc' };
+		let sortState = { field: 'hostname', dir: 'asc' };
+		
+		function refreshProxies() {
+			const table = document.getElementById('proxies-table');
+			const searchBox = document.querySelector('.search-box');
+			const query = searchBox ? searchBox.value : '';
+			
+			const params = new URLSearchParams();
+			if (query) params.set('q', query);
+			if (sortState.field) {
+				params.set('sort', sortState.field);
+				params.set('dir', sortState.dir);
+			}
+			
+			const url = '/dashboard/proxies?' + params.toString();
+			fetch(url).then(r => r.text()).then(html => {
+				table.innerHTML = html;
+			});
+		}
+		
+		function refreshStats() {
+			const stats = document.getElementById('stats-grid');
+			fetch('/dashboard/stats').then(r => r.text()).then(html => {
+				stats.innerHTML = html;
+			});
+		}
+		
+		setInterval(refreshStats, 1000);
+		setInterval(refreshProxies, 1000);
 		
 		document.body.addEventListener('click', function(e) {
 			const link = e.target.closest('.sort-link');
@@ -292,30 +320,16 @@
 					sortState.dir = 'desc';
 				}
 				
-				const table = document.getElementById('proxies-table');
-				const searchBox = document.querySelector('.search-box');
-				const query = searchBox ? searchBox.value : '';
-				
-				const url = '/dashboard/proxies?q=' + encodeURIComponent(query) + 
-					'&sort=' + sortState.field + '&dir=' + sortState.dir;
-				
-				table.innerHTML = '<div class="loading">Loading...</div>';
-				fetch(url).then(r => r.text()).then(html => {
-					table.innerHTML = html;
-				});
+				refreshProxies();
 			}
 		});
 
 		const searchBox = document.querySelector('.search-box');
 		if (searchBox) {
+			let debounceTimer;
 			searchBox.addEventListener('input', function(e) {
-				const url = '/dashboard/proxies?q=' + encodeURIComponent(e.target.value) + 
-					'&sort=' + sortState.field + '&dir=' + sortState.dir;
-				const table = document.getElementById('proxies-table');
-				table.innerHTML = '<div class="loading">Loading...</div>';
-				fetch(url).then(r => r.text()).then(html => {
-					table.innerHTML = html;
-				});
+				clearTimeout(debounceTimer);
+				debounceTimer = setTimeout(refreshProxies, 300);
 			});
 		}
 	</script>
