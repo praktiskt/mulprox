@@ -259,7 +259,7 @@ func TestSeedDeterminism(t *testing.T) {
 	}
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := proxy.New(logger, 30*time.Second, p)
+	h := proxy.New(logger, 30*time.Second, p, false)
 
 	// Create test server
 	ts := &http.Server{
@@ -336,4 +336,95 @@ func TestSeedDeterminism(t *testing.T) {
 	} else {
 		t.Logf("seed 456 returns different IP: %s", ip4)
 	}
+}
+
+func TestHTTPSOnlyMode(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	p := mullvad.New()
+	_, err := p.FetchMullvadList(ctx)
+	if err != nil {
+		t.Fatalf("failed to fetch mullvad list: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := proxy.New(logger, 30*time.Second, p, true)
+
+	ts := &http.Server{
+		Handler:           h,
+		ReadTimeout:       30 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create listener: %v", err)
+	}
+	defer listener.Close()
+
+	go func() {
+		if err := ts.Serve(listener); err != http.ErrServerClosed {
+			t.Errorf("server error: %v", err)
+		}
+	}()
+	defer ts.Close()
+
+	time.Sleep(100 * time.Millisecond)
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: func(*http.Request) (*url.URL, error) {
+				return url.Parse("http://" + listener.Addr().String())
+			},
+		},
+	}
+
+	resp, err := client.Get("http://example.com")
+	if err != nil {
+		t.Fatalf("HTTP request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusForbidden {
+		t.Errorf("expected 403 Forbidden for HTTP request in https-only mode, got %d", resp.StatusCode)
+	}
+
+	httpsClient := &http.Client{
+		Transport: &http.Transport{
+			Proxy: func(*http.Request) (*url.URL, error) {
+				return url.Parse("http://" + listener.Addr().String())
+			},
+			ProxyConnectHeader: http.Header{
+				"Proxy-Authorization": {`{"seed":1}`},
+			},
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://httpbin.org/ip", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	resp, err = httpsClient.Do(req)
+	if err != nil {
+		t.Fatalf("HTTPS request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Errorf("expected 200 OK for HTTPS request, got %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Origin string `json:"origin"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if result.Origin == "" {
+		t.Error("expected non-empty origin IP from HTTPS request")
+	}
+	t.Logf("HTTPS request succeeded, exit IP: %s", result.Origin)
 }

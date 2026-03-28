@@ -28,9 +28,13 @@ var serveCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("failed to get port flag: %w", err)
 		}
+		httpsOnly, err := cmd.Flags().GetBool("https-only")
+		if err != nil {
+			return fmt.Errorf("failed to get https-only flag: %w", err)
+		}
 
 		mullvadProvider := mullvad.New()
-		proxyHandler := proxy.New(logger, timeout, mullvadProvider)
+		proxyHandler := proxy.New(logger, timeout, mullvadProvider, httpsOnly)
 
 		addr := fmt.Sprintf("%s:%d", host, port)
 		logger.Info("proxy server listening", slog.String("addr", addr))
@@ -64,5 +68,6 @@ var serveCmd = &cobra.Command{
 func init() {
 	serveCmd.Flags().String("host", "0.0.0.0", "Host to bind to")
 	serveCmd.Flags().IntP("port", "p", 8080, "Port to listen on")
+	serveCmd.Flags().Bool("https-only", false, "Reject HTTP requests, only allow HTTPS")
 	rootCmd.AddCommand(serveCmd)
 }

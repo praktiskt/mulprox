@@ -63,16 +63,18 @@ var bufferPool = sync.Pool{
 }
 
 type Handler struct {
-	logger  *slog.Logger
-	timeout time.Duration
-	mullvad *mullvad.Provider
+	logger    *slog.Logger
+	timeout   time.Duration
+	mullvad   *mullvad.Provider
+	httpsOnly bool
 }
 
-func New(logger *slog.Logger, timeout time.Duration, mullvad *mullvad.Provider) *Handler {
+func New(logger *slog.Logger, timeout time.Duration, mullvad *mullvad.Provider, httpsOnly bool) *Handler {
 	return &Handler{
-		logger:  logger,
-		timeout: timeout,
-		mullvad: mullvad,
+		logger:    logger,
+		timeout:   timeout,
+		mullvad:   mullvad,
+		httpsOnly: httpsOnly,
 	}
 }
 
@@ -93,6 +95,11 @@ func (h *Handler) putTransport(t *http.Transport) {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if h.httpsOnly && r.Method != http.MethodConnect {
+		http.Error(w, "HTTPS only", http.StatusForbidden)
+		return
+	}
+
 	h.logger.Debug("request", slog.String("method", r.Method), slog.String("url", r.URL.String()), slog.String("host", r.Host))
 
 	if r.Method == http.MethodConnect {
