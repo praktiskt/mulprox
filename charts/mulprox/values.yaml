@@ -1,0 +1,15 @@
+image:
+  repository: praktiskt/mulprox
+  tag: latest
+  pullPolicy: IfNotPresent
+
+replicaCount: 1
+
+service:
+  port: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  annotations: {}
