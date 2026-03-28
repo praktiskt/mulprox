@@ -241,7 +241,10 @@ func (h *Handler) proxyRequestHTTP(ctx context.Context, w http.ResponseWriter, r
 		h.stats.RecordRequest(remoteID)
 	}
 
-	h.copyResponseBody(w, resp.Body)
+	n, _ := io.Copy(w, resp.Body)
+	if h.stats != nil && remoteID != "" && n > 0 {
+		h.stats.RecordBytes(remoteID, 0, n)
+	}
 }
 
 func (h *Handler) handleConnectHTTP(w http.ResponseWriter, r *http.Request) {
