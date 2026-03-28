@@ -42,6 +42,7 @@ var serveCmd = &cobra.Command{
 
 		ctx, cancelStats := context.WithCancel(context.Background())
 		statsCollector.Start(ctx)
+		statsStore.Start()
 
 		proxyHandler := proxy.New(logger, timeout, mullvadProvider, httpsOnly, statsStore)
 		dashboardHandler := dashboard.New(statsStore)
@@ -81,6 +82,7 @@ var serveCmd = &cobra.Command{
 
 		cancelStats()
 		statsCollector.Stop()
+		statsStore.Stop()
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		s.Shutdown(shutdownCtx)

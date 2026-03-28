@@ -12,6 +12,8 @@ import (
 	"github.com/praktiskt/mulprox/internal/mullvad"
 )
 
+const DefaultFlushInterval = 50 * time.Millisecond
+
 type Store interface {
 	RecordRequest(remoteID string)
 	RecordBytes(remoteID string, sent, received int64)
@@ -25,72 +27,311 @@ type Store interface {
 	GetAggregatedStats() AggregatedStats
 }
 
+type pendingUpdate struct {
+	mu           sync.Mutex
+	requestCount uint64
+	bytesSent    uint64
+	bytesRecv    uint64
+	latencySum   time.Duration
+	latencyCount uint64
+	errorCount   uint64
+	egressIP     string
+	hostname     string
+	country      string
+	city         string
+	health       RemoteHealth
+	hasEgressIP  bool
+	hasMetadata  bool
+	hasHealth    bool
+}
+
 type InMemoryStore struct {
 	*RemoteStore
+	flushInterval time.Duration
+	updateCh      chan interface{}
+	stopCh        chan struct{}
+	wg            sync.WaitGroup
+	started       bool
 }
 
 func NewInMemoryStore() *InMemoryStore {
 	return &InMemoryStore{
-		RemoteStore: NewRemoteStore(),
+		RemoteStore:   NewRemoteStore(),
+		flushInterval: DefaultFlushInterval,
+		updateCh:      make(chan interface{}, 10000),
+		stopCh:        make(chan struct{}),
+	}
+}
+
+func (s *InMemoryStore) Start() {
+	if s.started {
+		return
+	}
+	s.started = true
+	s.wg.Add(1)
+	go s.runFlusher()
+}
+
+func (s *InMemoryStore) Stop() {
+	if !s.started {
+		return
+	}
+	close(s.stopCh)
+	done := make(chan struct{})
+	go func() {
+		s.wg.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+	}
+	s.started = false
+}
+
+func (s *InMemoryStore) runFlusher() {
+	defer s.wg.Done()
+
+	ticker := time.NewTicker(s.flushInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.flush()
+		case <-s.stopCh:
+			s.flush()
+			return
+		}
+	}
+}
+
+func (s *InMemoryStore) flush() {
+	pending := make(map[string]*pendingUpdate)
+
+	for {
+		select {
+		case update := <-s.updateCh:
+			switch u := update.(type) {
+			case string:
+				remoteID := u
+				p, ok := pending[remoteID]
+				if !ok {
+					p = &pendingUpdate{}
+					pending[remoteID] = p
+				}
+				p.mu.Lock()
+				p.requestCount++
+				p.mu.Unlock()
+			case statBytes:
+				remoteID := u.remoteID
+				p, ok := pending[remoteID]
+				if !ok {
+					p = &pendingUpdate{}
+					pending[remoteID] = p
+				}
+				p.mu.Lock()
+				p.bytesSent += uint64(u.sent)
+				p.bytesRecv += uint64(u.received)
+				p.mu.Unlock()
+			case statLatency:
+				remoteID := u.remoteID
+				p, ok := pending[remoteID]
+				if !ok {
+					p = &pendingUpdate{}
+					pending[remoteID] = p
+				}
+				p.mu.Lock()
+				p.latencySum += u.latency
+				p.latencyCount++
+				p.mu.Unlock()
+			case stringWithID:
+				if u.isError {
+					remoteID := u.remoteID
+					p, ok := pending[remoteID]
+					if !ok {
+						p = &pendingUpdate{}
+						pending[remoteID] = p
+					}
+					p.mu.Lock()
+					p.errorCount++
+					p.mu.Unlock()
+				}
+			case statEgressIP:
+				remoteID := u.remoteID
+				p, ok := pending[remoteID]
+				if !ok {
+					p = &pendingUpdate{}
+					pending[remoteID] = p
+				}
+				p.mu.Lock()
+				p.egressIP = u.ip
+				p.hasEgressIP = true
+				p.mu.Unlock()
+			case statMetadata:
+				remoteID := u.remoteID
+				p, ok := pending[remoteID]
+				if !ok {
+					p = &pendingUpdate{}
+					pending[remoteID] = p
+				}
+				p.mu.Lock()
+				p.hostname = u.hostname
+				p.country = u.country
+				p.city = u.city
+				p.hasMetadata = true
+				p.mu.Unlock()
+			case statHealth:
+				remoteID := u.remoteID
+				p, ok := pending[remoteID]
+				if !ok {
+					p = &pendingUpdate{}
+					pending[remoteID] = p
+				}
+				p.mu.Lock()
+				p.health = u.health
+				p.hasHealth = true
+				p.mu.Unlock()
+			}
+		default:
+			goto apply
+		}
+
+		if len(pending) > 10000 {
+			goto apply
+		}
+	}
+
+apply:
+	for remoteID, p := range pending {
+		p.mu.Lock()
+		rc := p.requestCount
+		bs := p.bytesSent
+		br := p.bytesRecv
+		ls := p.latencySum
+		lc := p.latencyCount
+		ec := p.errorCount
+		ip := p.egressIP
+		hn := p.hostname
+		co := p.country
+		ci := p.city
+		hh := p.health
+		he := p.hasEgressIP
+		hm := p.hasMetadata
+		hhc := p.hasHealth
+		p.mu.Unlock()
+
+		if rc > 0 {
+			stats := s.GetOrCreate(remoteID)
+			stats.mu.Lock()
+			stats.RequestCount += rc
+			stats.LastUsed = time.Now()
+			stats.mu.Unlock()
+		}
+		if bs > 0 || br > 0 {
+			stats := s.GetOrCreate(remoteID)
+			stats.mu.Lock()
+			stats.BytesSent += bs
+			stats.BytesRecv += br
+			stats.mu.Unlock()
+		}
+		if lc > 0 {
+			stats := s.GetOrCreate(remoteID)
+			stats.mu.Lock()
+			stats.LatencySum += ls
+			stats.LatencyCount += lc
+			stats.mu.Unlock()
+		}
+		if ec > 0 {
+			stats := s.GetOrCreate(remoteID)
+			stats.mu.Lock()
+			stats.ErrorCount += ec
+			stats.mu.Unlock()
+		}
+		if he {
+			stats := s.GetOrCreate(remoteID)
+			stats.mu.Lock()
+			stats.EgressIP = ip
+			stats.mu.Unlock()
+		}
+		if hm {
+			stats := s.GetOrCreate(remoteID)
+			stats.mu.Lock()
+			stats.Hostname = hn
+			stats.Country = co
+			stats.City = ci
+			stats.mu.Unlock()
+		}
+		if hhc {
+			stats := s.GetOrCreate(remoteID)
+			stats.mu.Lock()
+			stats.Health = hh
+			stats.mu.Unlock()
+		}
+	}
+}
+
+type (
+	statBytes struct {
+		remoteID       string
+		sent, received int64
+	}
+	statLatency struct {
+		remoteID string
+		latency  time.Duration
+	}
+	stringWithID struct {
+		remoteID string
+		isError  bool
+	}
+	statEgressIP struct{ remoteID, ip string }
+	statMetadata struct{ remoteID, hostname, country, city string }
+	statHealth   struct {
+		remoteID string
+		health   RemoteHealth
+	}
+)
+
+func (s *InMemoryStore) sendNonBlocking(update interface{}) {
+	if !s.started {
+		return
+	}
+	select {
+	case s.updateCh <- update:
+	default:
 	}
 }
 
 func (s *InMemoryStore) RecordRequest(remoteID string) {
-	stats := s.GetOrCreate(remoteID)
-	stats.mu.Lock()
-	stats.RequestCount++
-	stats.LastUsed = time.Now()
-	stats.mu.Unlock()
+	s.sendNonBlocking(remoteID)
 }
 
 func (s *InMemoryStore) RecordBytes(remoteID string, sent, received int64) {
-	stats := s.GetOrCreate(remoteID)
-	stats.mu.Lock()
-	stats.BytesSent += uint64(sent)
-	stats.BytesRecv += uint64(received)
-	stats.mu.Unlock()
+	s.sendNonBlocking(statBytes{remoteID: remoteID, sent: sent, received: received})
 }
 
 func (s *InMemoryStore) RecordLatency(remoteID string, latency time.Duration) {
-	stats := s.GetOrCreate(remoteID)
-	stats.mu.Lock()
-	stats.LatencySum += latency
-	stats.LatencyCount++
-	stats.mu.Unlock()
+	s.sendNonBlocking(statLatency{remoteID: remoteID, latency: latency})
 }
 
 func (s *InMemoryStore) RecordError(remoteID string) {
-	stats := s.GetOrCreate(remoteID)
-	stats.mu.Lock()
-	stats.ErrorCount++
-	stats.mu.Unlock()
+	s.sendNonBlocking(stringWithID{remoteID: remoteID, isError: true})
 }
 
 func (s *InMemoryStore) SetRemoteEgressIP(remoteID string, ip string) {
-	stats := s.GetOrCreate(remoteID)
-	stats.mu.Lock()
-	stats.EgressIP = ip
-	stats.mu.Unlock()
+	s.sendNonBlocking(statEgressIP{remoteID: remoteID, ip: ip})
 }
 
 func (s *InMemoryStore) SetRemoteMetadata(remoteID, hostname, country, city string) {
-	stats := s.GetOrCreate(remoteID)
-	stats.mu.Lock()
-	stats.Hostname = hostname
-	stats.Country = country
-	stats.City = city
-	stats.mu.Unlock()
+	s.sendNonBlocking(statMetadata{remoteID: remoteID, hostname: hostname, country: country, city: city})
 }
 
 func (s *InMemoryStore) SetRemoteHealth(remoteID string, health RemoteHealth) {
-	stats := s.GetOrCreate(remoteID)
-	stats.mu.Lock()
-	stats.Health = health
-	stats.mu.Unlock()
+	s.sendNonBlocking(statHealth{remoteID: remoteID, health: health})
 }
 
 func (s *InMemoryStore) GetRemoteStats(remoteID string) *RemoteStats {
-	return s.GetOrCreate(remoteID)
+	return s.RemoteStore.GetOrCreate(remoteID)
 }
 
 func (s *InMemoryStore) GetAllRemoteStats() []*RemoteStats {

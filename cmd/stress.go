@@ -58,6 +58,7 @@ var stressCmd = &cobra.Command{
 
 		ctx, cancelStats := context.WithCancel(context.Background())
 		statsCollector.Start(ctx)
+		statsStore.Start()
 
 		proxyHandler := proxy.New(logger, timeout, mullvadProvider, false, statsStore)
 		dashboardHandler := dashboard.New(statsStore)
@@ -227,6 +228,8 @@ var stressCmd = &cobra.Command{
 
 		cancelStats()
 		statsCollector.Stop()
+		statsStore.Stop()
+		statsStore.Stop()
 
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 		s.Shutdown(shutdownCtx)
