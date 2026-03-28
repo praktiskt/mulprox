@@ -152,7 +152,7 @@ func (h *Handler) proxyHTTP(ctx context.Context, w http.ResponseWriter, r *http.
 	var lastErr error
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		resp, remoteID, err := h.roundTrip(ctx, r, targetURL, body)
+		resp, remoteID, sent, err := h.roundTrip(ctx, r, targetURL, body)
 		if err != nil {
 			if ctx.Err() != nil {
 				return // context canceled or timed out; client already gone
@@ -166,7 +166,7 @@ func (h *Handler) proxyHTTP(ctx context.Context, w http.ResponseWriter, r *http.
 		}
 
 		defer resp.Body.Close()
-		h.writeResponse(w, resp, remoteID)
+		h.writeResponse(w, resp, remoteID, sent)
 		return
 	}
 
@@ -181,15 +181,15 @@ func (h *Handler) proxyHTTP(ctx context.Context, w http.ResponseWriter, r *http.
 
 // roundTrip performs a single proxy attempt: resolves a SOCKS5 server, builds
 // a transport, and executes the request.
-func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL string, body []byte) (*http.Response, string, error) {
+func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL string, body []byte) (*http.Response, string, int64, error) {
 	socksAddr, remoteID, err := h.resolveSOCKS5(r)
 	if err != nil {
-		return nil, "", err
+		return nil, "", 0, err
 	}
 
 	socksDialer, err := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
 	if err != nil {
-		return nil, remoteID, err
+		return nil, remoteID, 0, err
 	}
 
 	tr := h.getTransport(socksDialer)
@@ -202,21 +202,41 @@ func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL stri
 
 	req, err := http.NewRequestWithContext(ctx, r.Method, targetURL, reqBody)
 	if err != nil {
-		return nil, remoteID, err
+		return nil, remoteID, 0, err
 	}
 	for key, values := range r.Header {
 		req.Header[key] = values
 	}
 
+	sent := httpRequestSize(req, len(body))
+
 	resp, err := tr.RoundTrip(req)
 	if err != nil {
-		return nil, remoteID, err
+		return nil, remoteID, 0, err
 	}
-	return resp, remoteID, nil
+	return resp, remoteID, sent, nil
+}
+
+// httpRequestSize returns the approximate number of bytes the HTTP request
+// will write on the wire (request line + headers + body).
+func httpRequestSize(req *http.Request, bodyLen int) int64 {
+	// Request line: METHOD SP REQUEST_URI PROTO\r\n
+	size := int64(len(req.Method)) + 1 + int64(len(req.URL.RequestURI())) + 1 + int64(len(req.Proto)) + 2
+	// Headers
+	for key, values := range req.Header {
+		for _, v := range values {
+			size += int64(len(key)) + 2 + int64(len(v)) + 2 // "Key: Value\r\n"
+		}
+	}
+	// Blank line
+	size += 2
+	// Body
+	size += int64(bodyLen)
+	return size
 }
 
 // writeResponse copies the upstream response to the client and records stats.
-func (h *Handler) writeResponse(w http.ResponseWriter, resp *http.Response, remoteID string) {
+func (h *Handler) writeResponse(w http.ResponseWriter, resp *http.Response, remoteID string, sentBytes int64) {
 	for key, values := range resp.Header {
 		for _, value := range values {
 			w.Header().Add(key, value)
@@ -229,8 +249,8 @@ func (h *Handler) writeResponse(w http.ResponseWriter, resp *http.Response, remo
 	}
 
 	n, _ := io.Copy(w, resp.Body)
-	if h.stats != nil && remoteID != "" && n > 0 {
-		h.stats.RecordBytes(remoteID, 0, n)
+	if h.stats != nil && remoteID != "" && (sentBytes > 0 || n > 0) {
+		h.stats.RecordBytes(remoteID, sentBytes, n)
 	}
 }
 
@@ -295,29 +315,49 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	h.tunnel(clientConn, targetConn)
+	h.tunnel(clientConn, targetConn, remoteID)
+}
+
+type countingReader struct {
+	reader io.Reader
+	count  *int64
+}
+
+func (c *countingReader) Read(p []byte) (int, error) {
+	n, err := c.reader.Read(p)
+	*c.count += int64(n)
+	return n, err
 }
 
 // tunnel copies data bidirectionally between client and target connections.
-func (h *Handler) tunnel(clientConn, targetConn net.Conn) {
-	buf := bufferPool.Get().([]byte)
-	defer bufferPool.Put(buf)
+func (h *Handler) tunnel(clientConn, targetConn net.Conn, remoteID string) {
+	buf1 := bufferPool.Get().([]byte)
+	buf2 := bufferPool.Get().([]byte)
+	defer bufferPool.Put(buf1)
+	defer bufferPool.Put(buf2)
 
-	errc := make(chan error, 2)
+	var sent, received int64
+
+	var wg sync.WaitGroup
+	wg.Add(2)
 
 	go func() {
-		_, err := io.CopyBuffer(targetConn, clientConn, buf)
+		defer wg.Done()
+		io.CopyBuffer(targetConn, &countingReader{reader: clientConn, count: &sent}, buf1)
 		targetConn.Close()
-		errc <- err
 	}()
 
 	go func() {
-		_, err := io.CopyBuffer(clientConn, targetConn, buf)
+		defer wg.Done()
+		io.CopyBuffer(clientConn, &countingReader{reader: targetConn, count: &received}, buf2)
 		clientConn.Close()
-		errc <- err
 	}()
 
-	<-errc
+	wg.Wait()
+
+	if h.stats != nil && remoteID != "" && (sent > 0 || received > 0) {
+		h.stats.RecordBytes(remoteID, sent, received)
+	}
 }
 
 // resolveSOCKS5 picks a Mullvad SOCKS5 server based on the request's
