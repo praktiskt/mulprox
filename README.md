@@ -15,14 +15,15 @@ curl https://ipinfo.io
 
 ## Request Configuration
 
-Control server selection using the `Proxy-Authorization` header with JSON. This
-works for both HTTP and HTTPS (CONNECT) requests.
+Control server selection using the `Proxy-Authorization` header with JSON. This works for both HTTP and HTTPS (CONNECT) requests.
+
+If no `Proxy-Authorization` header is provided, a random Mullvad server is selected automatically for each request.
 
 | Field | Description | Example |
 |-------|-------------|---------|
 | `country` | Filter by country | `"Sweden"` |
 | `city` | Filter by city | `"Stockholm"` |
-| `seed` | Deterministic server selection | `12345` |
+| `seed` | Deterministic server selection. Same seed = same server. No seed = random. | `12345` |
 | `owned` | Only Mullvad-owned servers | `true` |
 | `provider` | Filter by hosting provider | `"M247"` |
 | `speed` | Minimum server speed (Mbps) | `1000` |
@@ -32,13 +33,13 @@ works for both HTTP and HTTPS (CONNECT) requests.
 
 ```bash
 # Route through Sweden
-curl -H "Proxy-Authorization: {\"country\":\"Sweden\"}" https://ipinfo.io
+curl --proxy-header "Proxy-Authorization: {\"country\":\"Sweden\"}" https://ipinfo.io
 
 # Deterministic IP (same seed = same server)
-curl -H "Proxy-Authorization: {\"seed\":12345}" https://ipinfo.io
+curl --proxy-header "Proxy-Authorization: {\"seed\":12345}" https://ipinfo.io
 
 # Combine filters
-curl -H "Proxy-Authorization: {\"country\":\"Sweden\",\"owned\":true}" https://ipinfo.io
+curl --proxy-header "Proxy-Authorization: {\"country\":\"Sweden\",\"owned\":true}" https://ipinfo.io
 ```
 
 ## Commands
