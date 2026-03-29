@@ -466,7 +466,7 @@ func (c *Collector) pingServer(ctx context.Context, socksHost string, socksPort 
 }
 
 func (c *Collector) measureSOCKS5Latency(socksHost string, socksPort int) int64 {
-	addr := fmt.Sprintf("%s:%d", socksHost, socksPort)
+	addr := net.JoinHostPort(socksHost, fmt.Sprintf("%d", socksPort))
 
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
