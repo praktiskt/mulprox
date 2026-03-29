@@ -2,6 +2,7 @@ package stats
 
 import (
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -14,18 +15,17 @@ type RemoteHealth struct {
 }
 
 type RemoteStats struct {
-	mu           sync.Mutex    `json:"-"`
 	RemoteID     string        `json:"remote_id"`
 	Hostname     string        `json:"hostname"`
 	Country      string        `json:"country"`
 	City         string        `json:"city"`
 	EgressIP     string        `json:"egress_ip"`
-	RequestCount uint64        `json:"request_count"`
-	BytesSent    uint64        `json:"bytes_sent"`
-	BytesRecv    uint64        `json:"bytes_recv"`
-	ErrorCount   uint64        `json:"error_count"`
-	LatencySum   time.Duration `json:"latency_sum"`
-	LatencyCount uint64        `json:"latency_count"`
+	RequestCount atomic.Uint64 `json:"request_count"`
+	BytesSent    atomic.Uint64 `json:"bytes_sent"`
+	BytesRecv    atomic.Uint64 `json:"bytes_recv"`
+	ErrorCount   atomic.Uint64 `json:"error_count"`
+	LatencySum   atomic.Int64  `json:"latency_sum"`
+	LatencyCount atomic.Uint64 `json:"latency_count"`
 	Health       RemoteHealth  `json:"health"`
 	LastUsed     time.Time     `json:"last_used"`
 	CreatedAt    time.Time     `json:"created_at"`
@@ -57,66 +57,60 @@ func DefaultConfig() Config {
 }
 
 type RemoteStore struct {
-	mu      sync.RWMutex
-	remotes map[string]*RemoteStats
+	remotes sync.Map
 }
 
 func NewRemoteStore() *RemoteStore {
-	return &RemoteStore{
-		remotes: make(map[string]*RemoteStats),
-	}
+	return &RemoteStore{}
 }
 
 func (s *RemoteStore) GetOrCreate(remoteID string) *RemoteStats {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	if stats, ok := s.remotes[remoteID]; ok {
-		return stats
+	if stats, ok := s.remotes.Load(remoteID); ok {
+		return stats.(*RemoteStats)
 	}
 
 	stats := &RemoteStats{
 		RemoteID:  remoteID,
 		CreatedAt: time.Now(),
 	}
-	s.remotes[remoteID] = stats
+	actual, loaded := s.remotes.LoadOrStore(remoteID, stats)
+	if loaded {
+		return actual.(*RemoteStats)
+	}
 	return stats
 }
 
 func (s *RemoteStore) GetAll() []*RemoteStats {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
-	result := make([]*RemoteStats, 0, len(s.remotes))
-	for _, stats := range s.remotes {
-		stats.mu.Lock()
-		result = append(result, stats)
-		stats.mu.Unlock()
-	}
+	result := make([]*RemoteStats, 0, 64)
+	s.remotes.Range(func(key, value interface{}) bool {
+		result = append(result, value.(*RemoteStats))
+		return true
+	})
 	return result
 }
 
 func (s *RemoteStore) GetAggregated() AggregatedStats {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-
 	var agg AggregatedStats
 	agg.RequestsPerRemote = make(map[string]uint64)
 
-	for _, rs := range s.remotes {
-		rs.mu.Lock()
-		agg.TotalRequests += rs.RequestCount
-		agg.TotalBytesSent += rs.BytesSent
-		agg.TotalBytesRecv += rs.BytesRecv
-		agg.TotalErrors += rs.ErrorCount
-		if rs.RequestCount > 0 {
+	s.remotes.Range(func(key, value interface{}) bool {
+		rs := value.(*RemoteStats)
+		reqCount := rs.RequestCount.Load()
+		agg.TotalRequests += reqCount
+		agg.TotalBytesSent += rs.BytesSent.Load()
+		agg.TotalBytesRecv += rs.BytesRecv.Load()
+		agg.TotalErrors += rs.ErrorCount.Load()
+		if reqCount > 0 {
 			agg.ActiveRemotes++
 		}
-		agg.RequestsPerRemote[rs.RemoteID] = rs.RequestCount
-		rs.mu.Unlock()
-	}
+		agg.RequestsPerRemote[rs.RemoteID] = reqCount
+		return true
+	})
 
-	agg.TotalRemotes = len(s.remotes)
+	s.remotes.Range(func(key, value interface{}) bool {
+		agg.TotalRemotes++
+		return true
+	})
 
 	return agg
 }

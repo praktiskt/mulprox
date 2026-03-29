@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
@@ -28,13 +29,12 @@ type Store interface {
 }
 
 type pendingUpdate struct {
-	mu           sync.Mutex
-	requestCount uint64
-	bytesSent    uint64
-	bytesRecv    uint64
-	latencySum   time.Duration
-	latencyCount uint64
-	errorCount   uint64
+	requestCount atomic.Uint64
+	bytesSent    atomic.Uint64
+	bytesRecv    atomic.Uint64
+	latencySum   atomic.Int64
+	latencyCount atomic.Uint64
+	errorCount   atomic.Uint64
 	egressIP     string
 	hostname     string
 	country      string
@@ -120,9 +120,7 @@ func (s *InMemoryStore) flush() {
 					p = &pendingUpdate{}
 					pending[remoteID] = p
 				}
-				p.mu.Lock()
-				p.requestCount++
-				p.mu.Unlock()
+				p.requestCount.Add(1)
 			case statBytes:
 				remoteID := u.remoteID
 				p, ok := pending[remoteID]
@@ -130,10 +128,8 @@ func (s *InMemoryStore) flush() {
 					p = &pendingUpdate{}
 					pending[remoteID] = p
 				}
-				p.mu.Lock()
-				p.bytesSent += uint64(u.sent)
-				p.bytesRecv += uint64(u.received)
-				p.mu.Unlock()
+				p.bytesSent.Add(uint64(u.sent))
+				p.bytesRecv.Add(uint64(u.received))
 			case statLatency:
 				remoteID := u.remoteID
 				p, ok := pending[remoteID]
@@ -141,10 +137,8 @@ func (s *InMemoryStore) flush() {
 					p = &pendingUpdate{}
 					pending[remoteID] = p
 				}
-				p.mu.Lock()
-				p.latencySum += u.latency
-				p.latencyCount++
-				p.mu.Unlock()
+				p.latencySum.Add(int64(u.latency))
+				p.latencyCount.Add(1)
 			case stringWithID:
 				if u.isError {
 					remoteID := u.remoteID
@@ -153,9 +147,7 @@ func (s *InMemoryStore) flush() {
 						p = &pendingUpdate{}
 						pending[remoteID] = p
 					}
-					p.mu.Lock()
-					p.errorCount++
-					p.mu.Unlock()
+					p.errorCount.Add(1)
 				}
 			case statEgressIP:
 				remoteID := u.remoteID
@@ -164,10 +156,8 @@ func (s *InMemoryStore) flush() {
 					p = &pendingUpdate{}
 					pending[remoteID] = p
 				}
-				p.mu.Lock()
 				p.egressIP = u.ip
 				p.hasEgressIP = true
-				p.mu.Unlock()
 			case statMetadata:
 				remoteID := u.remoteID
 				p, ok := pending[remoteID]
@@ -175,12 +165,10 @@ func (s *InMemoryStore) flush() {
 					p = &pendingUpdate{}
 					pending[remoteID] = p
 				}
-				p.mu.Lock()
 				p.hostname = u.hostname
 				p.country = u.country
 				p.city = u.city
 				p.hasMetadata = true
-				p.mu.Unlock()
 			case statHealth:
 				remoteID := u.remoteID
 				p, ok := pending[remoteID]
@@ -188,10 +176,8 @@ func (s *InMemoryStore) flush() {
 					p = &pendingUpdate{}
 					pending[remoteID] = p
 				}
-				p.mu.Lock()
 				p.health = u.health
 				p.hasHealth = true
-				p.mu.Unlock()
 			}
 		default:
 			goto apply
@@ -204,13 +190,12 @@ func (s *InMemoryStore) flush() {
 
 apply:
 	for remoteID, p := range pending {
-		p.mu.Lock()
-		rc := p.requestCount
-		bs := p.bytesSent
-		br := p.bytesRecv
-		ls := p.latencySum
-		lc := p.latencyCount
-		ec := p.errorCount
+		rc := p.requestCount.Load()
+		bs := p.bytesSent.Load()
+		br := p.bytesRecv.Load()
+		ls := time.Duration(p.latencySum.Load())
+		lc := p.latencyCount.Load()
+		ec := p.errorCount.Load()
 		ip := p.egressIP
 		hn := p.hostname
 		co := p.country
@@ -219,54 +204,38 @@ apply:
 		he := p.hasEgressIP
 		hm := p.hasMetadata
 		hhc := p.hasHealth
-		p.mu.Unlock()
 
-		if rc > 0 {
+		if rc > 0 || bs > 0 || br > 0 || lc > 0 || ec > 0 {
 			stats := s.GetOrCreate(remoteID)
-			stats.mu.Lock()
-			stats.RequestCount += rc
+			if rc > 0 {
+				stats.RequestCount.Add(rc)
+			}
+			if bs > 0 || br > 0 {
+				stats.BytesSent.Add(bs)
+				stats.BytesRecv.Add(br)
+			}
+			if lc > 0 {
+				stats.LatencySum.Add(int64(ls))
+				stats.LatencyCount.Add(lc)
+			}
+			if ec > 0 {
+				stats.ErrorCount.Add(ec)
+			}
 			stats.LastUsed = time.Now()
-			stats.mu.Unlock()
-		}
-		if bs > 0 || br > 0 {
-			stats := s.GetOrCreate(remoteID)
-			stats.mu.Lock()
-			stats.BytesSent += bs
-			stats.BytesRecv += br
-			stats.mu.Unlock()
-		}
-		if lc > 0 {
-			stats := s.GetOrCreate(remoteID)
-			stats.mu.Lock()
-			stats.LatencySum += ls
-			stats.LatencyCount += lc
-			stats.mu.Unlock()
-		}
-		if ec > 0 {
-			stats := s.GetOrCreate(remoteID)
-			stats.mu.Lock()
-			stats.ErrorCount += ec
-			stats.mu.Unlock()
 		}
 		if he {
 			stats := s.GetOrCreate(remoteID)
-			stats.mu.Lock()
 			stats.EgressIP = ip
-			stats.mu.Unlock()
 		}
 		if hm {
 			stats := s.GetOrCreate(remoteID)
-			stats.mu.Lock()
 			stats.Hostname = hn
 			stats.Country = co
 			stats.City = ci
-			stats.mu.Unlock()
 		}
 		if hhc {
 			stats := s.GetOrCreate(remoteID)
-			stats.mu.Lock()
 			stats.Health = hh
-			stats.mu.Unlock()
 		}
 	}
 }

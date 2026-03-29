@@ -54,7 +54,7 @@ func (h *Handler) serveProxies(w http.ResponseWriter, r *http.Request) {
 	if !isSorting && !isSearching {
 		var used []*stats.RemoteStats
 		for _, r := range remotes {
-			if r.RequestCount > 0 {
+			if r.RequestCount.Load() > 0 {
 				used = append(used, r)
 			}
 		}
@@ -103,13 +103,13 @@ func sortRemotes(remotes []*stats.RemoteStats, field, dir string) []*stats.Remot
 			}
 			cmp = 0
 		case "requests":
-			if sorted[i].RequestCount != sorted[j].RequestCount {
-				return sorted[i].RequestCount < sorted[j].RequestCount
+			if sorted[i].RequestCount.Load() != sorted[j].RequestCount.Load() {
+				return sorted[i].RequestCount.Load() < sorted[j].RequestCount.Load()
 			}
 			cmp = 0
 		case "errors":
-			if sorted[i].ErrorCount != sorted[j].ErrorCount {
-				return sorted[i].ErrorCount < sorted[j].ErrorCount
+			if sorted[i].ErrorCount.Load() != sorted[j].ErrorCount.Load() {
+				return sorted[i].ErrorCount.Load() < sorted[j].ErrorCount.Load()
 			}
 			cmp = 0
 		case "last_used":
@@ -118,8 +118,8 @@ func sortRemotes(remotes []*stats.RemoteStats, field, dir string) []*stats.Remot
 			}
 			cmp = 0
 		default:
-			if sorted[i].RequestCount != sorted[j].RequestCount {
-				return sorted[i].RequestCount < sorted[j].RequestCount
+			if sorted[i].RequestCount.Load() != sorted[j].RequestCount.Load() {
+				return sorted[i].RequestCount.Load() < sorted[j].RequestCount.Load()
 			}
 			cmp = 0
 		}

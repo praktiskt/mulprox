@@ -9,6 +9,7 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/sardanioss/httpcloak/client"
@@ -52,12 +53,9 @@ type Provider struct {
 	mu            sync.RWMutex
 	mullvadList   []Server
 	lastFetch     time.Time
-	mullvadStatus *bool
-	statusCheckMu sync.RWMutex
+	mullvadStatus atomic.Value
 	httpClient    *client.Client
 	fetchGroup    singleflight.Group
-	rng           *rand.Rand
-	rngMu         sync.Mutex
 
 	cachedServer   Server
 	cachedServerAt time.Time
@@ -67,15 +65,8 @@ type Provider struct {
 func New() *Provider {
 	return &Provider{
 		httpClient:    client.NewSession(preset),
-		rng:           rand.New(rand.NewSource(time.Now().UnixNano())),
 		cacheDuration: 1 * time.Second,
 	}
-}
-
-func (p *Provider) randIntn(n int) int {
-	p.rngMu.Lock()
-	defer p.rngMu.Unlock()
-	return p.rng.Intn(n)
 }
 
 func (p *Provider) Session(ctx context.Context, timeout time.Duration) (*client.Client, error) {
@@ -86,7 +77,7 @@ func (p *Provider) Session(ctx context.Context, timeout time.Duration) (*client.
 
 	server := FallbackMullvad
 	if len(mullvadServers) > 0 {
-		s := mullvadServers[p.randIntn(len(mullvadServers))]
+		s := mullvadServers[rand.Intn(len(mullvadServers))]
 		server = fmt.Sprintf("%s:%d", s.SOCKS5, s.SOCKSPort)
 	}
 
@@ -124,7 +115,7 @@ func (p *Provider) RandomSOCKS5Addr() (string, error) {
 		return FallbackMullvad, nil
 	}
 
-	s := mullvadServers[p.randIntn(len(mullvadServers))]
+	s := mullvadServers[rand.Intn(len(mullvadServers))]
 	return fmt.Sprintf("%s:%d", s.SOCKS5, s.SOCKSPort), nil
 }
 
@@ -189,7 +180,7 @@ func (p *Provider) GetFilteredServer(filter Filter) (Server, error) {
 		return filtered[index], nil
 	}
 
-	server := filtered[p.randIntn(len(filtered))]
+	server := filtered[rand.Intn(len(filtered))]
 
 	if needsCache {
 		p.cachedServer = server
@@ -240,11 +231,8 @@ func (d *timeoutDialer) Dial(network, address string) (net.Conn, error) {
 }
 
 func (p *Provider) CheckMullvadStatus(ctx context.Context) (bool, error) {
-	p.statusCheckMu.Lock()
-	defer p.statusCheckMu.Unlock()
-
-	if p.mullvadStatus != nil {
-		return *p.mullvadStatus, nil
+	if v := p.mullvadStatus.Load(); v != nil {
+		return v.(bool), nil
 	}
 
 	resp, err := p.httpClient.Get(ctx, MullvadURL, nil)
@@ -259,7 +247,7 @@ func (p *Provider) CheckMullvadStatus(ctx context.Context) (bool, error) {
 	}
 
 	isMullvad := status.MullvadExitIP
-	p.mullvadStatus = &isMullvad
+	p.mullvadStatus.Store(isMullvad)
 
 	return isMullvad, nil
 }
