@@ -274,16 +274,11 @@
 			<div class="loading">Loading stats...</div>
 		</div>
 
-		<input 
-			type="text" 
-			class="search-box" 
-			placeholder="Search by hostname, country, city, IP..." 
+		<input
+			type="text"
+			class="search-box"
+			placeholder="Search by hostname, country, city, IP..."
 			name="q"
-			hx-get="/dashboard/proxies"
-			hx-trigger="input changed delay:300ms"
-			hx-target="#proxies-table"
-			hx-vals='{"q": ""}'
-			oninput="this.setAttribute('hx-vals', JSON.stringify({q: this.value}))"
 		>
 		
 		<div id="proxies-table" hx-get="/dashboard/proxies" hx-trigger="load" hx-swap="innerHTML">
@@ -444,14 +439,13 @@
 
 			const url = '/dashboard/proxies?' + params.toString();
 			fetch(url).then(r => r.text()).then(html => {
-				const container = table.querySelector('.table-container');
-				const scrollLeft = container ? container.scrollLeft : 0;
-				table.innerHTML = html;
-				if (scrollLeft > 0) {
-					const newContainer = table.querySelector('.table-container');
-					if (newContainer) {
-						requestAnimationFrame(() => { newContainer.scrollLeft = scrollLeft; });
-					}
+				const doc = new DOMParser().parseFromString(html, 'text/html');
+				const newTbody = doc.querySelector('tbody');
+				const oldTbody = table.querySelector('tbody');
+				if (newTbody && oldTbody) {
+					oldTbody.replaceWith(newTbody);
+				} else if (!oldTbody) {
+					table.innerHTML = html;
 				}
 			});
 		}
