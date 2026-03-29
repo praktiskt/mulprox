@@ -29,3 +29,11 @@ spec:
           ports:
             - containerPort: {{ .Values.service.targetPort }}
           command: ["/app", "serve"]
+          {{- with .Values.health.livenessProbe }}
+          livenessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.health.readinessProbe }}
+          readinessProbe:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}

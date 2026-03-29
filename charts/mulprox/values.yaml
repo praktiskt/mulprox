@@ -30,6 +30,24 @@ env: []
 proxyService:
   enabled: true
 
+health:
+  livenessProbe:
+    httpGet:
+      path: /healthz
+      port: 8080
+    initialDelaySeconds: 5
+    periodSeconds: 10
+    failureThreshold: 3
+  readinessProbe:
+    httpGet:
+      path: /readyz
+      port: 8080
+    initialDelaySeconds: 10
+    periodSeconds: 10
+    # Allow up to 5 minutes (30 x 10s) for the first active proxy
+    # to be discovered before marking the pod unhealthy.
+    failureThreshold: 30
+
 affinity: {}
 # nodeAffinity:
 #   preferredDuringSchedulingIgnoredDuringExecution:
