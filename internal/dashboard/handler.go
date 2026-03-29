@@ -52,13 +52,6 @@ func (h *Handler) serveProxies(w http.ResponseWriter, r *http.Request) {
 	isSearching := query != ""
 
 	if !isSorting && !isSearching {
-		var used []*stats.RemoteStats
-		for _, r := range remotes {
-			if r.RequestCount.Load() > 0 {
-				used = append(used, r)
-			}
-		}
-		remotes = used
 		remotes = sortRemotes(remotes, "hostname", "asc")
 	} else if isSearching {
 		remotes = filterRemotes(remotes, query)

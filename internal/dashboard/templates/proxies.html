@@ -32,14 +32,14 @@
 			<td class="latency {{latencyClass .Health.PingMean}}">
 				{{if .Health.Online}}{{formatLatency .Health.PingMean}}{{else}}—{{end}}
 			</td>
-			<td>{{.RequestCount}}</td>
-			<td {{if gt .ErrorCount 0}}style="color: var(--red)"{{end}}>{{.ErrorCount}}</td>
+			<td>{{.RequestCount.Load}}</td>
+			<td {{if gt .ErrorCount.Load 0}}style="color: var(--red)"{{end}}>{{.ErrorCount.Load}}</td>
 			<td>{{formatTime .LastUsed}}</td>
 		</tr>
 		{{end}}
 	</tbody>
 </table>
-{{if not .IsSorting}}<p class="showing-used">Showing used proxies only. Click any column header to sort and show all.</p>{{end}}
+
 {{else}}
 <div class="empty">No proxies found</div>
 {{end}}
