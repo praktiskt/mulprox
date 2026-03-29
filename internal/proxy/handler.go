@@ -62,7 +62,11 @@ func (p *ProxyAuth) Apply(filter *mullvad.Filter) {
 
 var transportPool = sync.Pool{
 	New: func() interface{} {
-		return &http.Transport{}
+		return &http.Transport{
+			MaxIdleConns:        100,
+			MaxIdleConnsPerHost: 100,
+			IdleConnTimeout:     30 * time.Second,
+		}
 	},
 }
 
@@ -392,21 +396,20 @@ func (h *Handler) resolveSOCKS5(r *http.Request) (addr, remoteID string, err err
 }
 
 // getTransport returns a pooled http.Transport configured to dial through the
-// given SOCKS5 proxy. Connections are not reused (DisableKeepAlives) so each
-// request gets a fresh tunnel.
+// given SOCKS5 proxy with keep-alives enabled.
 func (h *Handler) getTransport(dialer proxy.Dialer) *http.Transport {
 	t := transportPool.Get().(*http.Transport)
 	t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		return dialer.Dial(network, addr)
 	}
 	t.TLSHandshakeTimeout = h.timeout
-	t.DisableKeepAlives = true
+	t.DisableKeepAlives = false
+	t.MaxIdleConnsPerHost = 100
 	return t
 }
 
-// putTransport flushes idle connections and returns the transport to the pool.
+// putTransport returns the transport to the pool without closing idle connections.
 func (h *Handler) putTransport(t *http.Transport) {
-	t.CloseIdleConnections()
 	t.DialContext = nil
 	transportPool.Put(t)
 }

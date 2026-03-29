@@ -57,15 +57,12 @@ type Provider struct {
 	httpClient    *client.Client
 	fetchGroup    singleflight.Group
 
-	cachedServer   Server
-	cachedServerAt time.Time
-	cacheDuration  time.Duration
+	healthyServers atomic.Value
 }
 
 func New() *Provider {
 	return &Provider{
-		httpClient:    client.NewSession(preset),
-		cacheDuration: 1 * time.Second,
+		httpClient: client.NewSession(preset),
 	}
 }
 
@@ -130,14 +127,6 @@ type Filter struct {
 }
 
 func (p *Provider) GetFilteredServer(filter Filter) (Server, error) {
-	needsCache := filter.Seed == 0 && filter.Country == "" && filter.City == "" && filter.Owned == nil && filter.Provider == "" && filter.MinSpeed == 0 && !filter.Multihop
-
-	if needsCache {
-		if time.Since(p.cachedServerAt) < p.cacheDuration && p.cachedServer.Hostname != "" {
-			return p.cachedServer, nil
-		}
-	}
-
 	mullvadServers, err := p.FetchMullvadList(context.Background())
 	if err != nil {
 		return Server{}, err
@@ -181,12 +170,6 @@ func (p *Provider) GetFilteredServer(filter Filter) (Server, error) {
 	}
 
 	server := filtered[rand.Intn(len(filtered))]
-
-	if needsCache {
-		p.cachedServer = server
-		p.cachedServerAt = time.Now()
-	}
-
 	return server, nil
 }
 
