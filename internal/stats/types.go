@@ -114,3 +114,7 @@ func (s *RemoteStore) GetAggregated() AggregatedStats {
 
 	return agg
 }
+
+func (s *RemoteStats) IsOnline() bool {
+	return s.Health.Online
+}
