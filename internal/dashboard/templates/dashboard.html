@@ -294,7 +294,7 @@
 			requests: { values: [], prev: 0, chart: null, isRate: true },
 			active: { values: [], prev: 0, chart: null, isRate: false },
 			total: { values: [], prev: 0, chart: null, isRate: false },
-			errors: { values: [], prev: 0, chart: null, isRate: false },
+			errors: { values: [], prev: 0, chart: null, isRate: true },
 			sent: { values: [], prev: 0, chart: null, isRate: true },
 			recv: { values: [], prev: 0, chart: null, isRate: true },
 		};
@@ -417,7 +417,7 @@
 
 				if (key === 'sent' || key === 'recv') {
 					el.textContent = formatRate(val);
-				} else if (key === 'requests') {
+				} else if (key === 'requests' || key === 'errors') {
 					el.textContent = Math.round(val) + '/s';
 				} else {
 					el.textContent = String(Math.round(val));

@@ -1,6 +1,6 @@
 <div class="stats-partial">
 	<div class="stat-card">
-		<div class="stat-label">Total Requests</div>
+		<div class="stat-label">Requests</div>
 		<div class="stat-value blue" data-rate="requests" data-raw="{{.TotalRequests}}">{{.TotalRequests}}/s</div>
 		<div class="stat-row"><div class="sparkline-container"><canvas id="chart-requests"></canvas></div></div>
 	</div>
@@ -15,8 +15,8 @@
 		<div class="stat-row"><div class="sparkline-container"><canvas id="chart-total"></canvas></div></div>
 	</div>
 	<div class="stat-card">
-		<div class="stat-label">Total Errors</div>
-		<div class="stat-value red" data-rate="errors" data-raw="{{.TotalErrors}}">{{.TotalErrors}}</div>
+		<div class="stat-label">Errors</div>
+		<div class="stat-value red" data-rate="errors" data-raw="{{.TotalErrors}}">{{.TotalErrors}}/s</div>
 		<div class="stat-row"><div class="sparkline-container"><canvas id="chart-errors"></canvas></div></div>
 	</div>
 	<div class="stat-card">
