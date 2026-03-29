@@ -434,17 +434,25 @@
 			const table = document.getElementById('proxies-table');
 			const searchBox = document.querySelector('.search-box');
 			const query = searchBox ? searchBox.value : '';
-			
+
 			const params = new URLSearchParams();
 			if (query) params.set('q', query);
 			if (sortState.field) {
 				params.set('sort', sortState.field);
 				params.set('dir', sortState.dir);
 			}
-			
+
 			const url = '/dashboard/proxies?' + params.toString();
 			fetch(url).then(r => r.text()).then(html => {
+				const container = table.querySelector('.table-container');
+				const scrollLeft = container ? container.scrollLeft : 0;
 				table.innerHTML = html;
+				if (scrollLeft > 0) {
+					const newContainer = table.querySelector('.table-container');
+					if (newContainer) {
+						requestAnimationFrame(() => { newContainer.scrollLeft = scrollLeft; });
+					}
+				}
 			});
 		}
 		
