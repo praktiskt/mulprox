@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/praktiskt/mulprox/internal/dashboard"
+	"github.com/praktiskt/mulprox/internal/health"
 	"github.com/praktiskt/mulprox/internal/mullvad"
 	"github.com/praktiskt/mulprox/internal/proxy"
 	"github.com/praktiskt/mulprox/internal/stats"
@@ -46,12 +47,18 @@ var serveCmd = &cobra.Command{
 
 		proxyHandler := proxy.New(logger, timeout, mullvadProvider, httpsOnly, statsStore)
 		dashboardHandler := dashboard.New(statsStore)
+		healthHandler := health.New(statsStore)
 
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			logger.Debug("request", slog.String("method", r.Method), slog.String("url", r.URL.String()), slog.String("path", r.URL.Path))
-			if strings.HasPrefix(r.URL.Path, "/dashboard") {
+			switch {
+			case r.URL.Path == "/healthz":
+				healthHandler.Livez(w, r)
+			case r.URL.Path == "/readyz":
+				healthHandler.Readyz(w, r)
+			case strings.HasPrefix(r.URL.Path, "/dashboard"):
 				dashboardHandler.ServeHTTP(w, r)
-			} else {
+			default:
 				proxyHandler.ServeHTTP(w, r)
 			}
 		})

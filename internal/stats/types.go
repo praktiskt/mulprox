@@ -103,6 +103,9 @@ func (s *RemoteStore) GetAggregated() AggregatedStats {
 		if rs.EgressIP != "" {
 			agg.ActiveRemotes++
 		}
+		if rs.Health.Online {
+			agg.OnlineRemotes++
+		}
 		agg.RequestsPerRemote[rs.RemoteID] = reqCount
 		return true
 	})
