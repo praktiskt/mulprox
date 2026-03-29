@@ -50,6 +50,8 @@
 			color: var(--lavender);
 			margin-bottom: 8px;
 			font-weight: 600;
+			font-family: monospace;
+			text-transform: lowercase;
 		}
 		
 		h2 {
@@ -66,11 +68,6 @@
 			margin-bottom: 24px;
 		}
 		
-		.subtitle {
-			color: var(--subtext0);
-			font-size: 0.9rem;
-		}
-		
 		.stats-grid {
 			display: grid;
 			grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
@@ -81,11 +78,11 @@
 		.stat-card {
 			background: var(--surface0);
 			border-radius: 8px;
-			padding: 12px;
+			padding: 16px;
 			border: 1px solid var(--surface1);
 			display: flex;
 			flex-direction: column;
-			gap: 4px;
+			gap: 6px;
 			text-align: center;
 		}
 
@@ -97,23 +94,24 @@
 		}
 
 		.stat-card .sparkline-container {
-			flex: 1;
-			height: 28px;
+			margin: 0 auto;
+			width: 100%;
+			height: 40px;
 		}
 
 		.stat-card .sparkline-container canvas {
 			width: 100% !important;
-			height: 28px !important;
+			height: 40px !important;
 		}
 		
 		.stat-label {
 			color: var(--subtext1);
-			font-size: 0.75rem;
+			font-size: 0.8rem;
 		}
 		
 		.stat-value {
 			color: var(--text);
-			font-size: 1.3rem;
+			font-size: 1.5rem;
 			font-weight: 600;
 		}
 		
@@ -150,7 +148,7 @@
 		.table-container {
 			background: var(--surface0);
 			border-radius: 12px;
-			overflow: hidden;
+			overflow: auto;
 			border: 1px solid var(--surface1);
 		}
 		
@@ -246,27 +244,14 @@
 			color: var(--overlay0);
 		}
 		
-		.refresh-btn {
-			background: var(--surface1);
-			border: 1px solid var(--surface2);
-			color: var(--text);
-			padding: 8px 16px;
-			border-radius: 6px;
-			cursor: pointer;
-			font-size: 0.9rem;
-		}
-		
-		.refresh-btn:hover {
-			background: var(--surface2);
-		}
-		
 		.stats-partial {
 			display: grid;
-			grid-template-columns: repeat(6, 140px);
-			gap: 12px;
+			grid-template-columns: repeat(6, 1fr);
+			gap: 16px;
+			margin-bottom: 24px;
 		}
 
-		@media (max-width: 1000px) {
+		@media (max-width: 1150px) {
 			.stats-partial {
 				grid-template-columns: repeat(3, 1fr);
 			}
@@ -282,20 +267,13 @@
 <body>
 	<div class="container">
 		<div class="header">
-			<div>
-				<h1>Mulprox Dashboard</h1>
-				<p class="subtitle">Proxy health and performance</p>
-			</div>
-			<button class="refresh-btn" hx-get="/dashboard/stats" hx-trigger="click" hx-target="#stats-grid">
-				Refresh
-			</button>
+			<h1>mulprox dashboard</h1>
 		</div>
 
 		<div id="stats-grid" hx-get="/dashboard/stats" hx-trigger="load" hx-swap="innerHTML">
 			<div class="loading">Loading stats...</div>
 		</div>
 
-		<h2>All Proxies</h2>
 		<input 
 			type="text" 
 			class="search-box" 
@@ -387,7 +365,12 @@
 						},
 						scales: {
 							x: { display: false },
-							y: { display: false }
+							y: {
+								display: false,
+								beginAtZero: true,
+								suggestedMin: 0,
+								grace: '50%',
+							}
 						},
 						animation: { duration: 0 },
 						interaction: {

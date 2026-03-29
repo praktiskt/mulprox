@@ -1,6 +1,7 @@
 {{$sort := .Sort}}
 {{$query := .Query}}
 {{if .Remotes}}
+<div class="table-container">
 <table>
 	<thead>
 		<tr>
@@ -39,6 +40,7 @@
 		{{end}}
 	</tbody>
 </table>
+</div>
 
 {{else}}
 <div class="empty">No proxies found</div>
