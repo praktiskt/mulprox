@@ -19,7 +19,13 @@ clean:
 	rm -f mulprox
 
 docker-build:
-	docker build -t mulprox .
+	docker build -t mulprox:build .
 
-docker-run:
-	docker run -p 8080:8080 mulprox
+docker-run: docker-build
+	docker run -p 8080:8080 mulprox:build
+
+docker-tag: docker-build
+	docker tag mulprox:build praktiskt/mulprox:latest
+
+docker-push: docker-tag
+	docker push praktiskt/mulprox:latest
