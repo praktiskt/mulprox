@@ -28,4 +28,4 @@ spec:
           {{- end }}
           ports:
             - containerPort: {{ .Values.service.targetPort }}
-          command: ["mulprox", "serve"]
+          command: ["/app", "serve"]

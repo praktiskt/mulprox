@@ -1,0 +1,19 @@
+{{- if .Values.proxyService.enabled -}}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-proxy
+  labels:
+    app: {{ .Release.Name }}
+  annotations:
+    tailscale.com/hostname: {{ .Release.Name }}-proxy
+spec:
+  type: LoadBalancer
+  loadBalancerClass: tailscale
+  ports:
+    - port: 1080
+      targetPort: {{ .Values.service.targetPort }}
+      protocol: TCP
+  selector:
+    app: {{ .Release.Name }}
+{{- end }}

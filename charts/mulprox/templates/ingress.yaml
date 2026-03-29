@@ -2,7 +2,8 @@
 apiVersion: networking.k8s.io/v1
 kind: Ingress
 metadata:
-  name: {{ .Release.Name }}
+  name: {{ .Release.Name }}-ingress
+  namespace: {{ .Release.Namespace }}
   labels:
     app: {{ .Release.Name }}
   {{- with .Values.ingress.annotations }}
@@ -13,24 +14,13 @@ spec:
   {{- if .Values.ingress.className }}
   ingressClassName: {{ .Values.ingress.className }}
   {{- end }}
-  rules:
-    - http:
-        paths:
-          - path: /
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ .Release.Name }}
-                port:
-                  number: {{ .Values.service.port }}
-          - path: /dashboard
-            pathType: Prefix
-            backend:
-              service:
-                name: {{ .Release.Name }}
-                port:
-                  number: {{ .Values.service.port }}
-  {{- if .Values.ingress.host }}
-  host: {{ .Values.ingress.host }}
+  {{- with .Values.ingress.tls }}
+  tls:
+    {{- toYaml . | nindent 4 }}
   {{- end }}
+  defaultBackend:
+    service:
+      name: {{ .Release.Name }}
+      port:
+        number: {{ .Values.service.port }}
 {{- end }}

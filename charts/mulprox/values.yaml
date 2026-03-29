@@ -12,8 +12,11 @@ service:
 ingress:
   enabled: false
   className: ""
-  host: ""
   annotations: {}
+  tls: []
+  # - hosts:
+  #   - my-host
+  #   secretName: my-tls-secret
 
 env: []
 # - name: HTTP_PROXY
@@ -23,6 +26,9 @@ env: []
 #     secretKeyRef:
 #       name: my-secret
 #       key: password
+
+proxyService:
+  enabled: true
 
 affinity: {}
 # nodeAffinity:
