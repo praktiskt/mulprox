@@ -23,5 +23,5 @@ spec:
             {{- toYaml . | nindent 12 }}
           {{- end }}
           ports:
-            - containerPort: {{ .Values.service.port }}
+            - containerPort: {{ .Values.service.targetPort }}
           command: ["mulprox", "serve"]
