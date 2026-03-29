@@ -58,12 +58,17 @@ type Provider struct {
 	fetchGroup    singleflight.Group
 	rng           *rand.Rand
 	rngMu         sync.Mutex
+
+	cachedServer   Server
+	cachedServerAt time.Time
+	cacheDuration  time.Duration
 }
 
 func New() *Provider {
 	return &Provider{
-		httpClient: client.NewSession(preset),
-		rng:        rand.New(rand.NewSource(time.Now().UnixNano())),
+		httpClient:    client.NewSession(preset),
+		rng:           rand.New(rand.NewSource(time.Now().UnixNano())),
+		cacheDuration: 1 * time.Second,
 	}
 }
 
@@ -134,6 +139,14 @@ type Filter struct {
 }
 
 func (p *Provider) GetFilteredServer(filter Filter) (Server, error) {
+	needsCache := filter.Seed == 0 && filter.Country == "" && filter.City == "" && filter.Owned == nil && filter.Provider == "" && filter.MinSpeed == 0 && !filter.Multihop
+
+	if needsCache {
+		if time.Since(p.cachedServerAt) < p.cacheDuration && p.cachedServer.Hostname != "" {
+			return p.cachedServer, nil
+		}
+	}
+
 	mullvadServers, err := p.FetchMullvadList(context.Background())
 	if err != nil {
 		return Server{}, err
@@ -176,7 +189,14 @@ func (p *Provider) GetFilteredServer(filter Filter) (Server, error) {
 		return filtered[index], nil
 	}
 
-	return filtered[p.randIntn(len(filtered))], nil
+	server := filtered[p.randIntn(len(filtered))]
+
+	if needsCache {
+		p.cachedServer = server
+		p.cachedServerAt = time.Now()
+	}
+
+	return server, nil
 }
 
 func (p *Provider) GetServerBySeed(seed int64) (Server, error) {

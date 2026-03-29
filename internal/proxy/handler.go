@@ -72,11 +72,13 @@ var bufferPool = sync.Pool{
 }
 
 type Handler struct {
-	logger    *slog.Logger
-	timeout   time.Duration
-	mullvad   *mullvad.Provider
-	httpsOnly bool
-	stats     stats.Store
+	logger       *slog.Logger
+	timeout      time.Duration
+	mullvad      *mullvad.Provider
+	httpsOnly    bool
+	stats        stats.Store
+	lastServer   string
+	lastServerMu sync.Mutex
 }
 
 func New(logger *slog.Logger, timeout time.Duration, mullvad *mullvad.Provider, httpsOnly bool, statsStore stats.Store) *Handler {
@@ -379,7 +381,14 @@ func (h *Handler) resolveSOCKS5(r *http.Request) (addr, remoteID string, err err
 	}
 
 	if h.stats != nil {
-		h.stats.SetRemoteMetadata(server.Hostname, server.Hostname, server.Country, server.City)
+		h.lastServerMu.Lock()
+		if h.lastServer != server.Hostname {
+			h.lastServer = server.Hostname
+			h.lastServerMu.Unlock()
+			h.stats.SetRemoteMetadata(server.Hostname, server.Hostname, server.Country, server.City)
+		} else {
+			h.lastServerMu.Unlock()
+		}
 	}
 
 	return fmt.Sprintf("%s:%d", server.SOCKS5, server.SOCKSPort), server.Hostname, nil
