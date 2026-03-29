@@ -100,7 +100,7 @@ func (s *RemoteStore) GetAggregated() AggregatedStats {
 		agg.TotalBytesSent += rs.BytesSent.Load()
 		agg.TotalBytesRecv += rs.BytesRecv.Load()
 		agg.TotalErrors += rs.ErrorCount.Load()
-		if reqCount > 0 {
+		if rs.EgressIP != "" {
 			agg.ActiveRemotes++
 		}
 		agg.RequestsPerRemote[rs.RemoteID] = reqCount

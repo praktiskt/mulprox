@@ -3,9 +3,11 @@ package stats
 import (
 	"context"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -205,7 +207,7 @@ apply:
 		hm := p.hasMetadata
 		hhc := p.hasHealth
 
-		if rc > 0 || bs > 0 || br > 0 || lc > 0 || ec > 0 {
+		if rc > 0 || bs > 0 || br > 0 || lc > 0 || ec > 0 || he || hm || hhc {
 			stats := s.GetOrCreate(remoteID)
 			if rc > 0 {
 				stats.RequestCount.Add(rc)
@@ -221,21 +223,20 @@ apply:
 			if ec > 0 {
 				stats.ErrorCount.Add(ec)
 			}
-			stats.LastUsed = time.Now()
-		}
-		if he {
-			stats := s.GetOrCreate(remoteID)
-			stats.EgressIP = ip
-		}
-		if hm {
-			stats := s.GetOrCreate(remoteID)
-			stats.Hostname = hn
-			stats.Country = co
-			stats.City = ci
-		}
-		if hhc {
-			stats := s.GetOrCreate(remoteID)
-			stats.Health = hh
+			if rc > 0 || lc > 0 || ec > 0 {
+				stats.LastUsed = time.Now()
+			}
+			if he {
+				stats.EgressIP = ip
+			}
+			if hm {
+				stats.Hostname = hn
+				stats.Country = co
+				stats.City = ci
+			}
+			if hhc {
+				stats.Health = hh
+			}
 		}
 	}
 }
@@ -383,6 +384,8 @@ func (c *Collector) runEgressIPChecker(ctx context.Context) {
 	ticker := time.NewTicker(c.config.EgressIPCheckInterval)
 	defer ticker.Stop()
 
+	c.checkEgressIPs(ctx)
+
 	for {
 		select {
 		case <-ticker.C:
@@ -404,6 +407,9 @@ func (c *Collector) checkHealth(ctx context.Context) {
 
 	type result struct {
 		remoteID string
+		hostname string
+		country  string
+		city     string
 		health   RemoteHealth
 	}
 
@@ -415,12 +421,13 @@ func (c *Collector) checkHealth(ctx context.Context) {
 		go func(s mullvad.Server) {
 			defer func() { <-sem }()
 			health := c.pingServer(ctx, s.SOCKS5, s.SOCKSPort)
-			results <- result{remoteID: s.Hostname, health: health}
+			results <- result{remoteID: s.Hostname, hostname: s.Hostname, country: s.Country, city: s.City, health: health}
 		}(server)
 	}
 
 	for i := 0; i < len(servers); i++ {
 		r := <-results
+		c.store.SetRemoteMetadata(r.remoteID, r.hostname, r.country, r.city)
 		c.store.SetRemoteHealth(r.remoteID, r.health)
 	}
 }
@@ -479,11 +486,13 @@ func (c *Collector) checkEgressIPs(ctx context.Context) {
 	}
 
 	for _, server := range servers {
-		go c.checkEgressIPForServer(ctx, server.SOCKS5, server.SOCKSPort, server.Hostname)
+		go c.checkEgressIPForServer(ctx, server.SOCKS5, server.SOCKSPort, server.Hostname, server.Hostname, server.Country, server.City)
 	}
 }
 
-func (c *Collector) checkEgressIPForServer(ctx context.Context, socksHost string, socksPort int, remoteID string) {
+func (c *Collector) checkEgressIPForServer(ctx context.Context, socksHost string, socksPort int, remoteID, hostname, country, city string) {
+	c.store.SetRemoteMetadata(remoteID, hostname, country, city)
+
 	transport := &http.Transport{
 		Proxy: http.ProxyURL(nil),
 	}
@@ -512,9 +521,10 @@ func (c *Collector) checkEgressIPForServer(ctx context.Context, socksHost string
 	defer resp.Body.Close()
 
 	if resp.StatusCode == http.StatusOK {
-		buf := make([]byte, 64)
-		n, _ := resp.Body.Read(buf)
-		ip := string(buf[:n])
-		c.store.SetRemoteEgressIP(remoteID, ip)
+		ip, err := io.ReadAll(resp.Body)
+		if err != nil {
+			return
+		}
+		c.store.SetRemoteEgressIP(remoteID, strings.TrimSpace(string(ip)))
 	}
 }
