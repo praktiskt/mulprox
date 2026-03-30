@@ -91,8 +91,15 @@ func sortRemotes(remotes []*stats.RemoteStats, field, dir string) []*stats.Remot
 			}
 			cmp = 0
 		case "latency":
-			if sorted[i].Health.PingMean != sorted[j].Health.PingMean {
-				return sorted[i].Health.PingMean < sorted[j].Health.PingMean
+			pingI := sorted[i].Health.PingMean
+			pingJ := sorted[j].Health.PingMean
+			hasPingI := pingI > 0
+			hasPingJ := pingJ > 0
+			if hasPingI != hasPingJ {
+				return hasPingI
+			}
+			if hasPingI && pingI != pingJ {
+				return pingI < pingJ
 			}
 			cmp = 0
 		case "requests":
