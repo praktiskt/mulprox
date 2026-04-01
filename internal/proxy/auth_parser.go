@@ -28,6 +28,8 @@ func ParseProxyAuth(connStr string) (*ProxyAuth, error) {
 	auth := &ProxyAuth{}
 	pairs := strings.Split(connStr, ",")
 
+	var lastKey string
+
 	for _, pair := range pairs {
 		pair = strings.TrimSpace(pair)
 		if pair == "" {
@@ -35,12 +37,19 @@ func ParseProxyAuth(connStr string) (*ProxyAuth, error) {
 		}
 
 		eqIdx := strings.IndexByte(pair, '=')
-		if eqIdx < 0 {
-			return nil, fmt.Errorf("invalid parameter: %q (expected key=value)", pair)
-		}
+		var key, rawValue string
 
-		key := strings.ToLower(strings.TrimSpace(pair[:eqIdx]))
-		rawValue := pair[eqIdx+1:]
+		if eqIdx < 0 {
+			if lastKey == "" {
+				return nil, fmt.Errorf("invalid parameter: %q (expected key=value)", pair)
+			}
+			key = lastKey
+			rawValue = pair
+		} else {
+			key = strings.ToLower(strings.TrimSpace(pair[:eqIdx]))
+			rawValue = pair[eqIdx+1:]
+			lastKey = key
+		}
 
 		// URL-decode the value to handle spaces and special characters
 		value, err := url.QueryUnescape(rawValue)

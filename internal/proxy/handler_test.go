@@ -110,6 +110,26 @@ func TestParseProxyAuth(t *testing.T) {
 			input:    "country=Sweden,country=Norway",
 			expected: ProxyAuth{Countries: []string{"Sweden", "Norway"}},
 		},
+		{
+			name:     "comma-separated country values",
+			input:    "country=Finland,Sweden",
+			expected: ProxyAuth{Countries: []string{"Finland", "Sweden"}},
+		},
+		{
+			name:     "comma-separated with other keys",
+			input:    "seed=123,country=Finland,Sweden",
+			expected: ProxyAuth{Seed: 123, Countries: []string{"Finland", "Sweden"}},
+		},
+		{
+			name:     "comma-separated city values",
+			input:    "city=Oslo,Stockholm",
+			expected: ProxyAuth{Cities: []string{"Oslo", "Stockholm"}},
+		},
+		{
+			name:     "comma-separated provider values",
+			input:    "provider=Provider1,Provider2",
+			expected: ProxyAuth{Providers: []string{"Provider1", "Provider2"}},
+		},
 	}
 
 	for _, tt := range tests {
