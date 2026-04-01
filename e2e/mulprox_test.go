@@ -2,6 +2,7 @@ package e2e
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"io"
 	"log/slog"
@@ -289,6 +290,11 @@ func TestSeedDeterminism(t *testing.T) {
 	// Wait for server to start
 	time.Sleep(100 * time.Millisecond)
 
+	// Helper to create Basic auth header for connection string
+	makeAuthHeader := func(connStr string) string {
+		return "Basic " + base64.StdEncoding.EncodeToString([]byte(connStr))
+	}
+
 	// Helper to fetch exit IP via httpbin with Proxy-Authorization header
 	fetchIP := func(seed string) string {
 		client := &http.Client{
@@ -297,7 +303,7 @@ func TestSeedDeterminism(t *testing.T) {
 					return url.Parse("http://" + listener.Addr().String())
 				},
 				ProxyConnectHeader: http.Header{
-					"Proxy-Authorization": {`{"seed":` + seed + `}`},
+					"Proxy-Authorization": {makeAuthHeader("seed=" + seed)},
 				},
 			},
 		}
@@ -401,7 +407,7 @@ func TestHTTPSOnlyMode(t *testing.T) {
 				return url.Parse("http://" + listener.Addr().String())
 			},
 			ProxyConnectHeader: http.Header{
-				"Proxy-Authorization": {`{"seed":1}`},
+				"Proxy-Authorization": {"Basic " + base64.StdEncoding.EncodeToString([]byte("seed=1"))},
 			},
 		},
 	}

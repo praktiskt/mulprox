@@ -3,7 +3,7 @@ package proxy
 import (
 	"bytes"
 	"context"
-	"encoding/json"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -367,13 +367,23 @@ func (h *Handler) tunnel(clientConn, targetConn net.Conn, remoteID string) {
 // resolveSOCKS5 picks a Mullvad SOCKS5 server based on the request's
 // Proxy-Authorization header and returns its address and identifier.
 // It skips servers that are offline according to health checks.
+//
+// The header is expected to be in the format:
+//
+//	Proxy-Authorization: Basic <base64(connection-string)>
+//
+// where the connection string is comma-separated key=value pairs, e.g.:
+//
+//	seed=123,country=Stockholm
+//
+// Parameter keys are case-insensitive.
 func (h *Handler) resolveSOCKS5(r *http.Request) (addr, remoteID string, err error) {
 	filter := mullvad.Filter{}
 
 	if v := r.Header.Get("Proxy-Authorization"); v != "" {
-		var auth ProxyAuth
-		if err := json.Unmarshal([]byte(v), &auth); err != nil {
-			return "", "", fmt.Errorf("invalid Proxy-Authorization JSON: %w", err)
+		auth, err := parseProxyAuthHeader(v)
+		if err != nil {
+			return "", "", fmt.Errorf("invalid Proxy-Authorization: %w", err)
 		}
 		auth.Apply(&filter)
 	}
@@ -405,6 +415,29 @@ func (h *Handler) resolveSOCKS5(r *http.Request) (addr, remoteID string, err err
 		h.stats.SetRemoteMetadata(server.Hostname, server.Hostname, server.Country, server.City)
 	}
 	return fmt.Sprintf("%s:%d", server.SOCKS5, server.SOCKSPort), server.Hostname, nil
+}
+
+// parseProxyAuthHeader parses the Proxy-Authorization header value.
+// It supports the "Basic <base64>" format where the decoded value is a
+// connection string (comma-separated key=value pairs).
+func parseProxyAuthHeader(header string) (*ProxyAuth, error) {
+	// Expect "Basic <base64>"
+	const prefix = "Basic "
+	if !strings.HasPrefix(header, prefix) {
+		return nil, fmt.Errorf("expected Basic auth, got: %q", header[:min(len(header), 20)])
+	}
+
+	encoded := strings.TrimPrefix(header, prefix)
+	decoded, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("invalid base64: %w", err)
+	}
+
+	connStr := string(decoded)
+	// Trim trailing colon if present (empty password in URL userinfo format)
+	connStr = strings.TrimSuffix(connStr, ":")
+
+	return ParseProxyAuth(connStr)
 }
 
 // getTransport returns a pooled http.Transport configured to dial through the
