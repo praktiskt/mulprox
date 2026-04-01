@@ -390,25 +390,25 @@ func (h *Handler) resolveSOCKS5(r *http.Request) (addr, remoteID string, err err
 		auth.Apply(&filter)
 	}
 
-	for i := 0; i < 10; i++ {
-		server, err := h.mullvad.GetFilteredServer(filter)
-		if err != nil {
-			return "", "", err
+	isOnline := func(hostname string) bool {
+		if h.stats == nil {
+			return true
 		}
+		stats := h.stats.GetRemoteStats(hostname)
+		return stats == nil || stats.IsOnline()
+	}
 
+	server, err := h.mullvad.GetFilteredServerWithHealth(filter, isOnline)
+	if err == nil {
 		if h.stats != nil {
 			h.stats.SetRemoteMetadata(server.Hostname, server.Hostname, server.Country, server.City)
-			stats := h.stats.GetRemoteStats(server.Hostname)
-			if stats != nil && !stats.IsOnline() {
-				h.logger.Debug("skipping offline server", slog.String("server", server.Hostname))
-				continue
-			}
 		}
-
 		return fmt.Sprintf("%s:%d", server.SOCKS5, server.SOCKSPort), server.Hostname, nil
 	}
 
-	server, err := h.mullvad.GetFilteredServer(filter)
+	h.logger.Debug("no healthy server found, falling back to any server", slog.String("error", err.Error()))
+
+	server, err = h.mullvad.GetFilteredServer(filter)
 	if err != nil {
 		return "", "", err
 	}

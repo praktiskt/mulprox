@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"net"
 	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -148,6 +149,43 @@ func (p *Provider) GetFilteredServer(filter Filter) (Server, error) {
 	return server, nil
 }
 
+func (p *Provider) GetFilteredServerWithHealth(filter Filter, isOnline func(string) bool) (Server, error) {
+	mullvadServers, err := p.FetchMullvadList(context.Background())
+	if err != nil {
+		return Server{}, err
+	}
+
+	if len(mullvadServers) == 0 {
+		return Server{}, fmt.Errorf("no servers available")
+	}
+
+	filtered := p.filterByFilter(mullvadServers, filter)
+
+	if len(filtered) == 0 {
+		return Server{}, fmt.Errorf("no servers match filter")
+	}
+
+	var healthy []Server
+	for _, s := range filtered {
+		if isOnline == nil || isOnline(s.Hostname) {
+			healthy = append(healthy, s)
+		}
+	}
+
+	if len(healthy) == 0 {
+		return Server{}, fmt.Errorf("no healthy servers match filter")
+	}
+
+	if filter.Seed != 0 {
+		rng := rand.New(rand.NewSource(filter.Seed))
+		index := rng.Intn(len(healthy))
+		return healthy[index], nil
+	}
+
+	server := healthy[rand.Intn(len(healthy))]
+	return server, nil
+}
+
 func (p *Provider) GetFilteredServers(filter Filter) ([]Server, error) {
 	mullvadServers, err := p.FetchMullvadList(context.Background())
 	if err != nil {
@@ -255,6 +293,10 @@ func (p *Provider) FetchMullvadList(ctx context.Context) ([]Server, error) {
 		}
 
 		mullvadServers := parseMullvadRelays(string(body))
+
+		sort.Slice(mullvadServers, func(i, j int) bool {
+			return mullvadServers[i].Hostname < mullvadServers[j].Hostname
+		})
 
 		p.mu.Lock()
 		p.mullvadList = mullvadServers
