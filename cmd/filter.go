@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"strings"
+
 	"github.com/praktiskt/mulprox/internal/mullvad"
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper"
@@ -8,9 +10,9 @@ import (
 
 func buildBaseFilter() mullvad.Filter {
 	f := mullvad.Filter{
-		Countries: viper.GetStringSlice("country"),
-		Cities:    viper.GetStringSlice("city"),
-		Providers: viper.GetStringSlice("provider"),
+		Countries: stringSliceFromViper("country"),
+		Cities:    stringSliceFromViper("city"),
+		Providers: stringSliceFromViper("provider"),
 		MinSpeed:  viper.GetInt("speed"),
 		Multihop:  viper.GetBool("multihop"),
 	}
@@ -19,6 +21,14 @@ func buildBaseFilter() mullvad.Filter {
 		f.Owned = &owned
 	}
 	return f
+}
+
+func stringSliceFromViper(key string) []string {
+	raw := viper.GetStringSlice(key)
+	if len(raw) == 1 && strings.Contains(raw[0], ",") {
+		return strings.Split(raw[0], ",")
+	}
+	return raw
 }
 
 func registerFilterFlags(cmd *cobra.Command) {
