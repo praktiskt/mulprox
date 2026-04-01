@@ -60,7 +60,7 @@ var stressCmd = &cobra.Command{
 		statsCollector.Start(ctx)
 		statsStore.Start()
 
-		proxyHandler := proxy.New(logger, timeout, mullvadProvider, false, statsStore)
+		proxyHandler := proxy.New(logger, timeout, mullvadProvider, false, statsStore, mullvad.Filter{})
 		dashboardHandler := dashboard.New(statsStore)
 
 		handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

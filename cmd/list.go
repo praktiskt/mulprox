@@ -1,7 +1,6 @@
 package cmd
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"text/tabwriter"
@@ -15,33 +14,15 @@ var listCmd = &cobra.Command{
 	Use:   "list",
 	Short: "List available Mullvad servers",
 	RunE: func(cmd *cobra.Command, args []string) error {
-		country, err := cmd.Flags().GetString("country")
-		if err != nil {
-			return fmt.Errorf("failed to get country flag: %w", err)
-		}
-		city, err := cmd.Flags().GetString("city")
-		if err != nil {
-			return fmt.Errorf("failed to get city flag: %w", err)
-		}
 		limit, err := cmd.Flags().GetInt("limit")
 		if err != nil {
 			return fmt.Errorf("failed to get limit flag: %w", err)
 		}
 
-		ctx, cancel := context.WithTimeout(context.Background(), timeout)
-		defer cancel()
-
 		p := mullvad.New()
-		servers, err := p.FetchMullvadList(ctx)
+		servers, err := p.GetFilteredServers(buildBaseFilter())
 		if err != nil {
-			return fmt.Errorf("failed to fetch server list: %w", err)
-		}
-
-		if country != "" {
-			servers = p.GetServersByCountry(country)
-		}
-		if city != "" {
-			servers = p.GetServersByCity(city)
+			return fmt.Errorf("failed to list servers: %w", err)
 		}
 
 		if limit > 0 && len(servers) > limit {
@@ -64,8 +45,7 @@ var listCmd = &cobra.Command{
 }
 
 func init() {
-	listCmd.Flags().String("country", "", "Filter by country")
-	listCmd.Flags().String("city", "", "Filter by city")
 	listCmd.Flags().Int("limit", 0, "Limit number of results")
+	registerFilterFlags(listCmd)
 	rootCmd.AddCommand(listCmd)
 }

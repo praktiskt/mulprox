@@ -55,9 +55,9 @@ func ParseProxyAuth(connStr string) (*ProxyAuth, error) {
 
 		switch key {
 		case "country":
-			auth.Country = value
+			auth.Countries = append(auth.Countries, value)
 		case "city":
-			auth.City = value
+			auth.Cities = append(auth.Cities, value)
 		case "seed":
 			n, err := strconv.ParseInt(value, 10, 64)
 			if err != nil {
@@ -71,7 +71,7 @@ func ParseProxyAuth(connStr string) (*ProxyAuth, error) {
 			}
 			auth.Owned = &b
 		case "provider":
-			auth.Provider = value
+			auth.Providers = append(auth.Providers, value)
 		case "speed":
 			n, err := strconv.Atoi(value)
 			if err != nil {

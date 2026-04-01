@@ -45,7 +45,7 @@ var serveCmd = &cobra.Command{
 		statsCollector.Start(ctx)
 		statsStore.Start()
 
-		proxyHandler := proxy.New(logger, timeout, mullvadProvider, httpsOnly, statsStore)
+		proxyHandler := proxy.New(logger, timeout, mullvadProvider, httpsOnly, statsStore, buildBaseFilter())
 		dashboardHandler := dashboard.New(statsStore)
 		healthHandler := health.New(statsStore)
 
@@ -103,5 +103,6 @@ func init() {
 	serveCmd.Flags().String("host", "0.0.0.0", "Host to bind to")
 	serveCmd.Flags().IntP("port", "p", 8080, "Port to listen on")
 	serveCmd.Flags().Bool("https-only", false, "Reject HTTP requests, only allow HTTPS")
+	registerFilterFlags(serveCmd)
 	rootCmd.AddCommand(serveCmd)
 }

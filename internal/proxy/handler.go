@@ -26,21 +26,21 @@ const (
 )
 
 type ProxyAuth struct {
-	Country  string `json:"country,omitempty"`
-	City     string `json:"city,omitempty"`
-	Seed     int64  `json:"seed,omitempty"`
-	Owned    *bool  `json:"owned,omitempty"`
-	Provider string `json:"provider,omitempty"`
-	MinSpeed int    `json:"speed,omitempty"`
-	Multihop bool   `json:"multihop,omitempty"`
+	Countries []string `json:"country,omitempty"`
+	Cities    []string `json:"city,omitempty"`
+	Seed      int64    `json:"seed,omitempty"`
+	Owned     *bool    `json:"owned,omitempty"`
+	Providers []string `json:"provider,omitempty"`
+	MinSpeed  int      `json:"speed,omitempty"`
+	Multihop  bool     `json:"multihop,omitempty"`
 }
 
 func (p *ProxyAuth) Apply(filter *mullvad.Filter) {
-	if p.Country != "" {
-		filter.Country = p.Country
+	if len(p.Countries) > 0 {
+		filter.Countries = append(filter.Countries, p.Countries...)
 	}
-	if p.City != "" {
-		filter.City = p.City
+	if len(p.Cities) > 0 {
+		filter.Cities = append(filter.Cities, p.Cities...)
 	}
 	if p.Seed != 0 {
 		filter.Seed = p.Seed
@@ -48,8 +48,8 @@ func (p *ProxyAuth) Apply(filter *mullvad.Filter) {
 	if p.Owned != nil {
 		filter.Owned = p.Owned
 	}
-	if p.Provider != "" {
-		filter.Provider = p.Provider
+	if len(p.Providers) > 0 {
+		filter.Providers = append(filter.Providers, p.Providers...)
 	}
 	if p.MinSpeed > 0 {
 		filter.MinSpeed = p.MinSpeed
@@ -76,20 +76,22 @@ var bufferPool = sync.Pool{
 }
 
 type Handler struct {
-	logger    *slog.Logger
-	timeout   time.Duration
-	mullvad   *mullvad.Provider
-	httpsOnly bool
-	stats     stats.Store
+	logger     *slog.Logger
+	timeout    time.Duration
+	mullvad    *mullvad.Provider
+	httpsOnly  bool
+	stats      stats.Store
+	baseFilter mullvad.Filter
 }
 
-func New(logger *slog.Logger, timeout time.Duration, mullvad *mullvad.Provider, httpsOnly bool, statsStore stats.Store) *Handler {
+func New(logger *slog.Logger, timeout time.Duration, mullvad *mullvad.Provider, httpsOnly bool, statsStore stats.Store, baseFilter mullvad.Filter) *Handler {
 	return &Handler{
-		logger:    logger,
-		timeout:   timeout,
-		mullvad:   mullvad,
-		httpsOnly: httpsOnly,
-		stats:     statsStore,
+		logger:     logger,
+		timeout:    timeout,
+		mullvad:    mullvad,
+		httpsOnly:  httpsOnly,
+		stats:      statsStore,
+		baseFilter: baseFilter,
 	}
 }
 
@@ -378,7 +380,7 @@ func (h *Handler) tunnel(clientConn, targetConn net.Conn, remoteID string) {
 //
 // Parameter keys are case-insensitive.
 func (h *Handler) resolveSOCKS5(r *http.Request) (addr, remoteID string, err error) {
-	filter := mullvad.Filter{}
+	filter := h.baseFilter
 
 	if v := r.Header.Get("Proxy-Authorization"); v != "" {
 		auth, err := parseProxyAuthHeader(v)

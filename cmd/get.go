@@ -27,10 +27,17 @@ var getCmd = &cobra.Command{
 		start := time.Now()
 
 		p := mullvad.New()
-		c, err := p.Session(ctx, timeout)
+
+		server, err := p.GetFilteredServer(buildBaseFilter())
 		if err != nil {
-			return fmt.Errorf("failed to get Mullvad session: %w", err)
+			return fmt.Errorf("failed to get server: %w", err)
 		}
+
+		socksAddr := fmt.Sprintf("%s:%d", server.SOCKS5, server.SOCKSPort)
+		c := client.NewSession("chrome-latest",
+			client.WithTimeout(timeout),
+			client.WithProxy("socks5://"+socksAddr),
+		)
 		defer c.Close()
 
 		logger.Debug("fetching URL", slog.String("url", url), slog.String("method", "GET"))
@@ -71,5 +78,6 @@ func writeOutput(path string, content []byte) error {
 
 func init() {
 	getCmd.Flags().StringP("output", "o", "", "Output file (default: stdout)")
+	registerFilterFlags(getCmd)
 	rootCmd.AddCommand(getCmd)
 }

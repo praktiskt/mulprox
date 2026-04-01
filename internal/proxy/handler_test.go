@@ -2,6 +2,7 @@ package proxy
 
 import (
 	"encoding/base64"
+	"slices"
 	"testing"
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
@@ -26,38 +27,38 @@ func TestParseProxyAuth(t *testing.T) {
 		{
 			name:     "country only",
 			input:    "country=Sweden",
-			expected: ProxyAuth{Country: "Sweden"},
+			expected: ProxyAuth{Countries: []string{"Sweden"}},
 		},
 		{
 			name:  "multiple fields",
 			input: "seed=42,country=Norway,city=Oslo,speed=1000,multihop=true",
 			expected: ProxyAuth{
-				Seed:     42,
-				Country:  "Norway",
-				City:     "Oslo",
-				MinSpeed: 1000,
-				Multihop: true,
+				Seed:      42,
+				Countries: []string{"Norway"},
+				Cities:    []string{"Oslo"},
+				MinSpeed:  1000,
+				Multihop:  true,
 			},
 		},
 		{
 			name:     "case insensitive keys",
 			input:    "SEED=123,COUNTRY=Sweden,CITY=Stockholm",
-			expected: ProxyAuth{Seed: 123, Country: "Sweden", City: "Stockholm"},
+			expected: ProxyAuth{Seed: 123, Countries: []string{"Sweden"}, Cities: []string{"Stockholm"}},
 		},
 		{
 			name:     "mixed case keys",
 			input:    "Seed=123,CoUnTrY=Sweden",
-			expected: ProxyAuth{Seed: 123, Country: "Sweden"},
+			expected: ProxyAuth{Seed: 123, Countries: []string{"Sweden"}},
 		},
 		{
 			name:     "url encoded spaces",
 			input:    "country=South%20Africa",
-			expected: ProxyAuth{Country: "South Africa"},
+			expected: ProxyAuth{Countries: []string{"South Africa"}},
 		},
 		{
 			name:     "url encoded special chars",
 			input:    "city=S%C3%A3o%20Paulo",
-			expected: ProxyAuth{City: "São Paulo"},
+			expected: ProxyAuth{Cities: []string{"São Paulo"}},
 		},
 		{
 			name:     "owned true",
@@ -102,7 +103,12 @@ func TestParseProxyAuth(t *testing.T) {
 		{
 			name:     "extra spaces",
 			input:    " seed = 123 , country = Sweden ",
-			expected: ProxyAuth{Seed: 123, Country: "Sweden"},
+			expected: ProxyAuth{Seed: 123, Countries: []string{"Sweden"}},
+		},
+		{
+			name:     "repeated country keys",
+			input:    "country=Sweden,country=Norway",
+			expected: ProxyAuth{Countries: []string{"Sweden", "Norway"}},
 		},
 	}
 
@@ -112,17 +118,17 @@ func TestParseProxyAuth(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to parse: %v", err)
 			}
-			if auth.Country != tt.expected.Country {
-				t.Errorf("country: expected %q, got %q", tt.expected.Country, auth.Country)
+			if !slices.Equal(auth.Countries, tt.expected.Countries) {
+				t.Errorf("countries: expected %v, got %v", tt.expected.Countries, auth.Countries)
 			}
-			if auth.City != tt.expected.City {
-				t.Errorf("city: expected %q, got %q", tt.expected.City, auth.City)
+			if !slices.Equal(auth.Cities, tt.expected.Cities) {
+				t.Errorf("cities: expected %v, got %v", tt.expected.Cities, auth.Cities)
 			}
 			if auth.Seed != tt.expected.Seed {
 				t.Errorf("seed: expected %d, got %d", tt.expected.Seed, auth.Seed)
 			}
-			if auth.Provider != tt.expected.Provider {
-				t.Errorf("provider: expected %q, got %q", tt.expected.Provider, auth.Provider)
+			if !slices.Equal(auth.Providers, tt.expected.Providers) {
+				t.Errorf("providers: expected %v, got %v", tt.expected.Providers, auth.Providers)
 			}
 			if auth.MinSpeed != tt.expected.MinSpeed {
 				t.Errorf("speed: expected %d, got %d", tt.expected.MinSpeed, auth.MinSpeed)
@@ -190,7 +196,7 @@ func TestParseProxyAuthHeader(t *testing.T) {
 		{
 			name:     "basic auth with connection string",
 			input:    "Basic " + base64.StdEncoding.EncodeToString([]byte("seed=123,country=Sweden")),
-			expected: ProxyAuth{Seed: 123, Country: "Sweden"},
+			expected: ProxyAuth{Seed: 123, Countries: []string{"Sweden"}},
 		},
 		{
 			name:     "basic auth with trailing colon",
@@ -210,17 +216,17 @@ func TestParseProxyAuthHeader(t *testing.T) {
 			if err != nil {
 				t.Fatalf("failed to parse: %v", err)
 			}
-			if auth.Country != tt.expected.Country {
-				t.Errorf("country: expected %q, got %q", tt.expected.Country, auth.Country)
+			if !slices.Equal(auth.Countries, tt.expected.Countries) {
+				t.Errorf("countries: expected %v, got %v", tt.expected.Countries, auth.Countries)
 			}
-			if auth.City != tt.expected.City {
-				t.Errorf("city: expected %q, got %q", tt.expected.City, auth.City)
+			if !slices.Equal(auth.Cities, tt.expected.Cities) {
+				t.Errorf("cities: expected %v, got %v", tt.expected.Cities, auth.Cities)
 			}
 			if auth.Seed != tt.expected.Seed {
 				t.Errorf("seed: expected %d, got %d", tt.expected.Seed, auth.Seed)
 			}
-			if auth.Provider != tt.expected.Provider {
-				t.Errorf("provider: expected %q, got %q", tt.expected.Provider, auth.Provider)
+			if !slices.Equal(auth.Providers, tt.expected.Providers) {
+				t.Errorf("providers: expected %v, got %v", tt.expected.Providers, auth.Providers)
 			}
 			if auth.MinSpeed != tt.expected.MinSpeed {
 				t.Errorf("speed: expected %d, got %d", tt.expected.MinSpeed, auth.MinSpeed)
@@ -266,13 +272,13 @@ func TestParseProxyAuthHeaderErrors(t *testing.T) {
 func TestProxyAuthApply(t *testing.T) {
 	owned := true
 	auth := ProxyAuth{
-		Seed:     123,
-		Country:  "Sweden",
-		City:     "Stockholm",
-		Owned:    &owned,
-		Provider: "Mullvad",
-		MinSpeed: 100,
-		Multihop: true,
+		Seed:      123,
+		Countries: []string{"Sweden"},
+		Cities:    []string{"Stockholm"},
+		Owned:     &owned,
+		Providers: []string{"Mullvad"},
+		MinSpeed:  100,
+		Multihop:  true,
 	}
 
 	filter := mullvad.Filter{}
@@ -281,17 +287,17 @@ func TestProxyAuthApply(t *testing.T) {
 	if filter.Seed != 123 {
 		t.Errorf("expected seed 123, got %d", filter.Seed)
 	}
-	if filter.Country != "Sweden" {
-		t.Errorf("expected country Sweden, got %s", filter.Country)
+	if len(filter.Countries) != 1 || filter.Countries[0] != "Sweden" {
+		t.Errorf("expected countries [Sweden], got %v", filter.Countries)
 	}
-	if filter.City != "Stockholm" {
-		t.Errorf("expected city Stockholm, got %s", filter.City)
+	if len(filter.Cities) != 1 || filter.Cities[0] != "Stockholm" {
+		t.Errorf("expected cities [Stockholm], got %v", filter.Cities)
 	}
 	if filter.Owned == nil || *filter.Owned != true {
 		t.Error("expected owned to be true")
 	}
-	if filter.Provider != "Mullvad" {
-		t.Errorf("expected provider Mullvad, got %s", filter.Provider)
+	if len(filter.Providers) != 1 || filter.Providers[0] != "Mullvad" {
+		t.Errorf("expected providers [Mullvad], got %v", filter.Providers)
 	}
 	if filter.MinSpeed != 100 {
 		t.Errorf("expected min speed 100, got %d", filter.MinSpeed)

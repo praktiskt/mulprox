@@ -117,13 +117,22 @@ func (p *Provider) RandomSOCKS5Addr() (string, error) {
 }
 
 type Filter struct {
-	Country  string
-	City     string
-	Owned    *bool
-	Provider string
-	MinSpeed int
-	Multihop bool
-	Seed     int64
+	Countries []string
+	Cities    []string
+	Owned     *bool
+	Providers []string
+	MinSpeed  int
+	Multihop  bool
+	Seed      int64
+}
+
+func stringInSlice(ss []string, s string) bool {
+	for _, v := range ss {
+		if strings.EqualFold(v, s) {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *Provider) GetFilteredServer(filter Filter) (Server, error) {
@@ -136,28 +145,7 @@ func (p *Provider) GetFilteredServer(filter Filter) (Server, error) {
 		return Server{}, fmt.Errorf("no servers available")
 	}
 
-	var filtered []Server
-	for _, s := range mullvadServers {
-		if filter.Country != "" && !strings.EqualFold(s.Country, filter.Country) {
-			continue
-		}
-		if filter.City != "" && !strings.EqualFold(s.City, filter.City) {
-			continue
-		}
-		if filter.Owned != nil && s.Owned != *filter.Owned {
-			continue
-		}
-		if filter.Provider != "" && !strings.EqualFold(s.Provider, filter.Provider) {
-			continue
-		}
-		if filter.MinSpeed > 0 && s.Speed < filter.MinSpeed {
-			continue
-		}
-		if filter.Multihop && s.Multihop == 0 {
-			continue
-		}
-		filtered = append(filtered, s)
-	}
+	filtered := p.filterByFilter(mullvadServers, filter)
 
 	if len(filtered) == 0 {
 		return Server{}, fmt.Errorf("no servers match filter")
@@ -173,16 +161,51 @@ func (p *Provider) GetFilteredServer(filter Filter) (Server, error) {
 	return server, nil
 }
 
+func (p *Provider) GetFilteredServers(filter Filter) ([]Server, error) {
+	mullvadServers, err := p.FetchMullvadList(context.Background())
+	if err != nil {
+		return nil, err
+	}
+
+	return p.filterByFilter(mullvadServers, filter), nil
+}
+
+func (p *Provider) filterByFilter(servers []Server, filter Filter) []Server {
+	var filtered []Server
+	for _, s := range servers {
+		if len(filter.Countries) > 0 && !stringInSlice(filter.Countries, s.Country) {
+			continue
+		}
+		if len(filter.Cities) > 0 && !stringInSlice(filter.Cities, s.City) {
+			continue
+		}
+		if filter.Owned != nil && s.Owned != *filter.Owned {
+			continue
+		}
+		if len(filter.Providers) > 0 && !stringInSlice(filter.Providers, s.Provider) {
+			continue
+		}
+		if filter.MinSpeed > 0 && s.Speed < filter.MinSpeed {
+			continue
+		}
+		if filter.Multihop && s.Multihop == 0 {
+			continue
+		}
+		filtered = append(filtered, s)
+	}
+	return filtered
+}
+
 func (p *Provider) GetServerBySeed(seed int64) (Server, error) {
 	return p.GetFilteredServer(Filter{Seed: seed})
 }
 
 func (p *Provider) GetServerByCountry(country string) (Server, error) {
-	return p.GetFilteredServer(Filter{Country: country})
+	return p.GetFilteredServer(Filter{Countries: []string{country}})
 }
 
 func (p *Provider) GetServerByCountryAndSeed(country string, seed int64) (Server, error) {
-	return p.GetFilteredServer(Filter{Country: country, Seed: seed})
+	return p.GetFilteredServer(Filter{Countries: []string{country}, Seed: seed})
 }
 
 type timeoutDialer struct {

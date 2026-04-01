@@ -262,7 +262,7 @@ func TestSeedDeterminism(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	statsStore := stats.NewInMemoryStore()
-	h := proxy.New(logger, 30*time.Second, p, false, statsStore)
+	h := proxy.New(logger, 30*time.Second, p, false, statsStore, mullvad.Filter{})
 
 	// Create test server
 	ts := &http.Server{
@@ -358,7 +358,7 @@ func TestHTTPSOnlyMode(t *testing.T) {
 
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
 	statsStore := stats.NewInMemoryStore()
-	h := proxy.New(logger, 30*time.Second, p, true, statsStore)
+	h := proxy.New(logger, 30*time.Second, p, true, statsStore, mullvad.Filter{})
 
 	ts := &http.Server{
 		Handler:           h,

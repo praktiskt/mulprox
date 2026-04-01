@@ -10,12 +10,14 @@ import (
 	"github.com/praktiskt/mulprox/internal/mullvad"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/viper"
 )
 
 var (
 	timeout      time.Duration
 	checkMullvad bool
 	debug        bool
+	configFile   string
 	logger       *slog.Logger
 )
 
@@ -32,6 +34,7 @@ func init() {
 	rootCmd.PersistentFlags().DurationVar(&timeout, "timeout", 30*time.Second, "Request timeout")
 	rootCmd.PersistentFlags().BoolVar(&checkMullvad, "check-mullvad", false, "Check local Mullvad status and exit")
 	rootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug logging")
+	rootCmd.PersistentFlags().StringVar(&configFile, "config", "", "Config file path (default: mulprox.yaml in current directory)")
 
 	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
 		if checkMullvad {
@@ -60,6 +63,23 @@ func init() {
 			Level:     level,
 			AddSource: true,
 		}))
+
+		viper.AutomaticEnv()
+		if configFile != "" {
+			viper.SetConfigFile(configFile)
+		} else {
+			viper.SetConfigName("mulprox")
+			viper.SetConfigType("yaml")
+			viper.AddConfigPath(".")
+		}
+		if err := viper.ReadInConfig(); err != nil {
+			if _, ok := err.(viper.ConfigFileNotFoundError); !ok {
+				return fmt.Errorf("failed to read config: %w", err)
+			}
+		}
+		if err := viper.BindPFlags(cmd.Flags()); err != nil {
+			return fmt.Errorf("failed to bind flags: %w", err)
+		}
 
 		return nil
 	}
