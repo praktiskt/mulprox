@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/praktiskt/mulprox/internal/stats"
+	"github.com/praktiskt/mulprox/internal/util"
 )
 
 //go:embed templates/*.html
@@ -18,7 +19,7 @@ var ProxiesTableTemplate *template.Template
 
 func init() {
 	funcs := template.FuncMap{
-		"formatBytes":   formatBytes,
+		"formatBytes":   util.FormatBytesUint,
 		"formatLatency": formatLatency,
 		"formatTime":    formatTime,
 		"latencyClass":  latencyClass,
@@ -41,19 +42,6 @@ func init() {
 	DashboardTemplate = template.Must(template.New("dashboard").Funcs(funcs).Parse(string(dashboardContent)))
 	StatsTemplate = template.Must(template.New("stats").Funcs(funcs).Parse(string(statsContent)))
 	ProxiesTableTemplate = template.Must(template.New("proxies").Funcs(funcs).Parse(string(proxiesContent)))
-}
-
-func formatBytes(b uint64) string {
-	const unit = 1024
-	if b < unit {
-		return fmt.Sprintf("%d B", b)
-	}
-	div, exp := uint64(unit), 0
-	for n := b / unit; n >= unit; n /= unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(b)/float64(div), "KMGTPE"[exp])
 }
 
 func formatLatency(ms float64) string {

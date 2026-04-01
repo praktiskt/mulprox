@@ -19,6 +19,7 @@ import (
 	"github.com/praktiskt/mulprox/internal/mullvad"
 	"github.com/praktiskt/mulprox/internal/proxy"
 	"github.com/praktiskt/mulprox/internal/stats"
+	"github.com/praktiskt/mulprox/internal/util"
 
 	"github.com/spf13/cobra"
 )
@@ -229,7 +230,6 @@ var stressCmd = &cobra.Command{
 		cancelStats()
 		statsCollector.Stop()
 		statsStore.Stop()
-		statsStore.Stop()
 
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
 		s.Shutdown(shutdownCtx)
@@ -240,16 +240,7 @@ var stressCmd = &cobra.Command{
 }
 
 func formatBytes(n int64) string {
-	const unit = 1024
-	if n < unit {
-		return fmt.Sprintf("%d B", n)
-	}
-	div, exp := int64(unit), 0
-	for n >= unit*unit {
-		div *= unit
-		exp++
-	}
-	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
+	return util.FormatBytes(n)
 }
 
 func init() {

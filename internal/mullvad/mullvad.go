@@ -22,7 +22,6 @@ const (
 	MullvadURL          = "https://am.i.mullvad.net/json"
 	MullvadListCacheTTL = 3 * time.Hour
 	FallbackMullvad     = "10.64.0.1:1080"
-	preset              = "chrome-latest"
 )
 
 type Status struct {
@@ -45,7 +44,6 @@ type Server struct {
 	Multihop  int
 	Owned     bool
 	Provider  string
-	STBoot    bool
 	Hostname  string
 }
 
@@ -56,13 +54,11 @@ type Provider struct {
 	mullvadStatus atomic.Value
 	httpClient    *client.Client
 	fetchGroup    singleflight.Group
-
-	healthyServers atomic.Value
 }
 
 func New() *Provider {
 	return &Provider{
-		httpClient: client.NewSession(preset),
+		httpClient: client.NewSession("chrome-latest"),
 	}
 }
 
@@ -78,19 +74,10 @@ func (p *Provider) Session(ctx context.Context, timeout time.Duration) (*client.
 		server = fmt.Sprintf("%s:%d", s.SOCKS5, s.SOCKSPort)
 	}
 
-	return client.NewSession(preset,
+	return client.NewSession("chrome-latest",
 		client.WithTimeout(timeout),
 		client.WithProxy("socks5://"+server),
 	), nil
-}
-
-func (p *Provider) SOCKS5Dialer(ctx context.Context, timeout time.Duration) (proxy.Dialer, error) {
-	socksAddr, err := p.RandomSOCKS5Addr()
-	if err != nil {
-		return nil, err
-	}
-
-	return p.SOCKS5DialerFromAddr(socksAddr, timeout)
 }
 
 func (p *Provider) SOCKS5DialerFromAddr(socksAddr string, timeout time.Duration) (proxy.Dialer, error) {
@@ -196,18 +183,6 @@ func (p *Provider) filterByFilter(servers []Server, filter Filter) []Server {
 	return filtered
 }
 
-func (p *Provider) GetServerBySeed(seed int64) (Server, error) {
-	return p.GetFilteredServer(Filter{Seed: seed})
-}
-
-func (p *Provider) GetServerByCountry(country string) (Server, error) {
-	return p.GetFilteredServer(Filter{Countries: []string{country}})
-}
-
-func (p *Provider) GetServerByCountryAndSeed(country string, seed int64) (Server, error) {
-	return p.GetFilteredServer(Filter{Countries: []string{country}, Seed: seed})
-}
-
 type timeoutDialer struct {
 	dialer  proxy.Dialer
 	timeout time.Duration
@@ -295,7 +270,7 @@ func (p *Provider) FetchMullvadList(ctx context.Context) ([]Server, error) {
 	return result.([]Server), nil
 }
 
-var relayRe = regexp.MustCompile(`hostname:"(?P<hostname>[^"]+)",country_code:"(?P<flag>[^"]+)",country_name:"(?P<country>[^"]+)",city_code:"[^"]+",city_name:"(?P<city>[^"]+)",fqdn:"[^"]+",active:(?P<active>true|false),owned:(?P<owned>true|false),provider:"(?P<provider>[^"]+)",ipv4_addr_in:"(?P<ipv4>[^"]+)",ipv6_addr_in:"(?P<ipv6>[^"]+)",network_port_speed:(?P<speed>\d+),stboot:(?P<stboot>true|false),type:"[^"]+",status_messages:\[\],pubkey:"[^"]+",multihop_port:(?P<multihop>\d+),socks_name:"(?P<socks>[^"]+)",socks_port:(?P<socksport>\d+),daita:`)
+var relayRe = regexp.MustCompile(`hostname:"(?P<hostname>[^"]+)",country_code:"(?P<flag>[^"]+)",country_name:"(?P<country>[^"]+)",city_code:"[^"]+",city_name:"(?P<city>[^"]+)",fqdn:"[^"]+",active:(?P<active>true|false),owned:(?P<owned>true|false),provider:"(?P<provider>[^"]+)",ipv4_addr_in:"(?P<ipv4>[^"]+)",ipv6_addr_in:"(?P<ipv6>[^"]+)",network_port_speed:(?P<speed>\d+),stboot:(?:true|false),type:"[^"]+",status_messages:\[\],pubkey:"[^"]+",multihop_port:(?P<multihop>\d+),socks_name:"(?P<socks>[^"]+)",socks_port:(?P<socksport>\d+),daita:`)
 
 func parseMullvadRelays(html string) []Server {
 	start := strings.Index(html, "relays:[")
@@ -355,7 +330,6 @@ func parseMullvadRelays(html string) []Server {
 			Multihop:  multihop,
 			Owned:     get(m, "owned") == "true",
 			Provider:  get(m, "provider"),
-			STBoot:    get(m, "stboot") == "true",
 			Hostname:  get(m, "hostname"),
 			SOCKSPort: socksPort,
 		})
