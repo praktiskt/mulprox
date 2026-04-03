@@ -40,6 +40,16 @@ type AggregatedStats struct {
 	TotalRemotes      int               `json:"total_remotes"`
 	OnlineRemotes     int               `json:"online_remotes"`
 	RequestsPerRemote map[string]uint64 `json:"requests_per_remote"`
+	Window            []WindowStat      `json:"window"`
+}
+
+type WindowStat struct {
+	Requests      uint64 `json:"requests"`
+	BytesSent     uint64 `json:"bytes_sent"`
+	BytesRecv     uint64 `json:"bytes_recv"`
+	Errors        uint64 `json:"errors"`
+	ActiveRemotes int    `json:"active_remotes"`
+	TotalRemotes  int    `json:"total_remotes"`
 }
 
 type Config struct {

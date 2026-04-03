@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"encoding/json"
 	"net/http"
 	"sort"
 	"strings"
@@ -148,8 +149,9 @@ func (h *Handler) serveDashboard(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *Handler) serveStats(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
 	agg := h.store.GetAggregatedStats()
-	if err := StatsTemplate.Execute(w, agg); err != nil {
+	if err := json.NewEncoder(w).Encode(agg); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 	}
 }

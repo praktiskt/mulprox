@@ -1,32 +1,32 @@
 <div class="stats-partial">
 	<div class="stat-card">
 		<div class="stat-label">Requests</div>
-		<div class="stat-value blue" data-rate="requests" data-raw="{{.TotalRequests}}">{{.TotalRequests}}/s</div>
+		<div class="stat-value blue" data-rate="requests">0/s</div>
 		<div class="stat-row"><div class="sparkline-container"><canvas id="chart-requests"></canvas></div></div>
 	</div>
 	<div class="stat-card">
 		<div class="stat-label">Active Proxies</div>
-		<div class="stat-value green" data-rate="active" data-raw="{{.ActiveRemotes}}">{{.ActiveRemotes}}</div>
+		<div class="stat-value green" data-rate="active">0</div>
 		<div class="stat-row"><div class="sparkline-container"><canvas id="chart-active"></canvas></div></div>
 	</div>
 	<div class="stat-card">
 		<div class="stat-label">Total Proxies</div>
-		<div class="stat-value mauve" data-rate="total" data-raw="{{.TotalRemotes}}">{{.TotalRemotes}}</div>
+		<div class="stat-value mauve" data-rate="total">0</div>
 		<div class="stat-row"><div class="sparkline-container"><canvas id="chart-total"></canvas></div></div>
 	</div>
 	<div class="stat-card">
 		<div class="stat-label">Errors</div>
-		<div class="stat-value red" data-rate="errors" data-raw="{{.TotalErrors}}">{{.TotalErrors}}/s</div>
+		<div class="stat-value red" data-rate="errors">0/s</div>
 		<div class="stat-row"><div class="sparkline-container"><canvas id="chart-errors"></canvas></div></div>
 	</div>
 	<div class="stat-card">
 		<div class="stat-label">Data Sent</div>
-		<div class="stat-value peach" data-rate="sent" data-raw="{{.TotalBytesSent}}">{{formatBytes .TotalBytesSent}}</div>
+		<div class="stat-value peach" data-rate="sent">0 B/s</div>
 		<div class="stat-row"><div class="sparkline-container"><canvas id="chart-sent"></canvas></div></div>
 	</div>
 	<div class="stat-card">
 		<div class="stat-label">Data Received</div>
-		<div class="stat-value teal" data-rate="recv" data-raw="{{.TotalBytesRecv}}">{{formatBytes .TotalBytesRecv}}</div>
+		<div class="stat-value teal" data-rate="recv">0 B/s</div>
 		<div class="stat-row"><div class="sparkline-container"><canvas id="chart-recv"></canvas></div></div>
 	</div>
 </div>

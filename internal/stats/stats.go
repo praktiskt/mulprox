@@ -15,7 +15,10 @@ import (
 	"github.com/praktiskt/mulprox/internal/mullvad"
 )
 
-const DefaultFlushInterval = 50 * time.Millisecond
+const (
+	DefaultFlushInterval = 50 * time.Millisecond
+	WindowSize           = 120
+)
 
 type Store interface {
 	RecordRequest(remoteID string)
@@ -54,6 +57,13 @@ type InMemoryStore struct {
 	stopCh        chan struct{}
 	wg            sync.WaitGroup
 	started       bool
+
+	window             []WindowStat
+	windowIdx          int
+	prevTotalRequests  uint64
+	prevTotalBytesSent uint64
+	prevTotalBytesRecv uint64
+	prevTotalErrors    uint64
 }
 
 func NewInMemoryStore() *InMemoryStore {
@@ -62,6 +72,7 @@ func NewInMemoryStore() *InMemoryStore {
 		flushInterval: DefaultFlushInterval,
 		updateCh:      make(chan interface{}, 10000),
 		stopCh:        make(chan struct{}),
+		window:        make([]WindowStat, WindowSize),
 	}
 }
 
@@ -72,6 +83,8 @@ func (s *InMemoryStore) Start() {
 	s.started = true
 	s.wg.Add(1)
 	go s.runFlusher()
+	s.wg.Add(1)
+	go s.runWindowTicker()
 }
 
 func (s *InMemoryStore) Stop() {
@@ -106,6 +119,47 @@ func (s *InMemoryStore) runFlusher() {
 			return
 		}
 	}
+}
+
+func (s *InMemoryStore) runWindowTicker() {
+	defer s.wg.Done()
+
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			s.updateWindow()
+		case <-s.stopCh:
+			return
+		}
+	}
+}
+
+func (s *InMemoryStore) updateWindow() {
+	agg := s.RemoteStore.GetAggregated()
+
+	requests := agg.TotalRequests - s.prevTotalRequests
+	bytesSent := agg.TotalBytesSent - s.prevTotalBytesSent
+	bytesRecv := agg.TotalBytesRecv - s.prevTotalBytesRecv
+	errors := agg.TotalErrors - s.prevTotalErrors
+
+	s.window[s.windowIdx] = WindowStat{
+		Requests:      requests,
+		BytesSent:     bytesSent,
+		BytesRecv:     bytesRecv,
+		Errors:        errors,
+		ActiveRemotes: agg.ActiveRemotes,
+		TotalRemotes:  agg.TotalRemotes,
+	}
+
+	s.windowIdx = (s.windowIdx + 1) % WindowSize
+
+	s.prevTotalRequests = agg.TotalRequests
+	s.prevTotalBytesSent = agg.TotalBytesSent
+	s.prevTotalBytesRecv = agg.TotalBytesRecv
+	s.prevTotalErrors = agg.TotalErrors
 }
 
 func (s *InMemoryStore) flush() {
@@ -309,7 +363,18 @@ func (s *InMemoryStore) GetAllRemoteStats() []*RemoteStats {
 }
 
 func (s *InMemoryStore) GetAggregatedStats() AggregatedStats {
-	return s.RemoteStore.GetAggregated()
+	agg := s.RemoteStore.GetAggregated()
+	agg.Window = s.getWindow()
+	return agg
+}
+
+func (s *InMemoryStore) getWindow() []WindowStat {
+	result := make([]WindowStat, WindowSize)
+	for i := 0; i < WindowSize; i++ {
+		idx := (s.windowIdx + i) % WindowSize
+		result[i] = s.window[idx]
+	}
+	return result
 }
 
 type Collector struct {

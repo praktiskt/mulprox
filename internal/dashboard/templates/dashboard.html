@@ -270,8 +270,39 @@
 			<h1>mulprox dashboard</h1>
 		</div>
 
-		<div id="stats-grid" hx-get="/dashboard/stats" hx-trigger="load" hx-swap="innerHTML">
-			<div class="loading">Loading stats...</div>
+		<div id="stats-grid">
+			<div class="stats-partial">
+				<div class="stat-card">
+					<div class="stat-label">Requests</div>
+					<div class="stat-value blue" data-rate="requests">0/s</div>
+					<div class="stat-row"><div class="sparkline-container"><canvas id="chart-requests"></canvas></div></div>
+				</div>
+				<div class="stat-card">
+					<div class="stat-label">Active Proxies</div>
+					<div class="stat-value green" data-rate="active">0</div>
+					<div class="stat-row"><div class="sparkline-container"><canvas id="chart-active"></canvas></div></div>
+				</div>
+				<div class="stat-card">
+					<div class="stat-label">Total Proxies</div>
+					<div class="stat-value mauve" data-rate="total">0</div>
+					<div class="stat-row"><div class="sparkline-container"><canvas id="chart-total"></canvas></div></div>
+				</div>
+				<div class="stat-card">
+					<div class="stat-label">Errors</div>
+					<div class="stat-value red" data-rate="errors">0/s</div>
+					<div class="stat-row"><div class="sparkline-container"><canvas id="chart-errors"></canvas></div></div>
+				</div>
+				<div class="stat-card">
+					<div class="stat-label">Data Sent</div>
+					<div class="stat-value peach" data-rate="sent">0 B/s</div>
+					<div class="stat-row"><div class="sparkline-container"><canvas id="chart-sent"></canvas></div></div>
+				</div>
+				<div class="stat-card">
+					<div class="stat-label">Data Received</div>
+					<div class="stat-value teal" data-rate="recv">0 B/s</div>
+					<div class="stat-row"><div class="sparkline-container"><canvas id="chart-recv"></canvas></div></div>
+				</div>
+			</div>
 		</div>
 
 		<input
@@ -289,96 +320,56 @@
 	<script>
 		let sortState = { field: 'hostname', dir: 'asc' };
 
-		const HISTORY_LENGTH = 60;
-		const history = {
-			requests: { values: [], prev: 0, chart: null, isRate: true },
-			active: { values: [], prev: 0, chart: null, isRate: false },
-			total: { values: [], prev: 0, chart: null, isRate: false },
-			errors: { values: [], prev: 0, chart: null, isRate: true },
-			sent: { values: [], prev: 0, chart: null, isRate: true },
-			recv: { values: [], prev: 0, chart: null, isRate: true },
+		const statConfig = {
+			requests:     { key: 'requests',     color: '#89b4fa', isRate: true },
+			active:       { key: 'active_remotes', color: '#a6e3a1', isRate: false },
+			total:        { key: 'total_remotes',  color: '#cba6f7', isRate: false },
+			errors:       { key: 'errors',        color: '#f38ba8', isRate: true },
+			sent:         { key: 'bytes_sent',    color: '#fab387', isRate: true },
+			recv:         { key: 'bytes_recv',    color: '#94e2d5', isRate: true },
 		};
 
-		const chartColors = {
-			blue: '#89b4fa',
-			green: '#a6e3a1',
-			mauve: '#cba6f7',
-			red: '#f38ba8',
-			peach: '#fab387',
-			teal: '#94e2d5',
-			text: '#cdd6f4',
-		};
+		const stats = {};
+		Object.keys(statConfig).forEach(key => {
+			stats[key] = { chart: null };
+		});
 
-		function destroyCharts() {
-			Object.keys(history).forEach(key => {
-				if (history[key].chart) {
-					history[key].chart.destroy();
-					history[key].chart = null;
-				}
-			});
-		}
+		const chartLabels = Array(120).fill('');
 
 		function initCharts() {
-			destroyCharts();
-			Object.keys(history).forEach(key => {
+			Object.keys(statConfig).forEach(key => {
 				const canvas = document.getElementById('chart-' + key);
 				if (!canvas) return;
 				const ctx = canvas.getContext('2d');
-				let color = chartColors.blue;
-				if (key === 'active') color = chartColors.green;
-				if (key === 'total') color = chartColors.mauve;
-				if (key === 'errors') color = chartColors.red;
-				if (key === 'sent') color = chartColors.peach;
-				if (key === 'recv') color = chartColors.teal;
+				const cfg = statConfig[key];
 
-				history[key].chart = new Chart(ctx, {
+				stats[key].chart = new Chart(ctx, {
 					type: 'line',
 					data: {
-						labels: Array(HISTORY_LENGTH).fill(''),
+						labels: chartLabels,
 						datasets: [{
 							data: [],
-							borderColor: color,
-							backgroundColor: color + '33',
+							borderColor: cfg.color,
+							backgroundColor: cfg.color + '33',
 							fill: true,
 							tension: 0.3,
 							pointRadius: 0,
-							hoverPointRadius: 4,
-							hoverPointBackgroundColor: color,
 							borderWidth: 2,
 						}]
 					},
 					options: {
 						responsive: true,
 						maintainAspectRatio: false,
-						plugins: { 
-							legend: { display: false },
-							tooltip: { 
-								enabled: true,
-								mode: 'index',
-								intersect: false,
-							}
-						},
+						plugins: { legend: { display: false } },
 						scales: {
 							x: { display: false },
-							y: {
-								display: false,
-								beginAtZero: true,
-								suggestedMin: 0,
-								grace: '50%',
-							}
+							y: { display: false, beginAtZero: true },
 						},
 						animation: { duration: 0 },
-						interaction: {
-							mode: 'nearest',
-							axis: 'x',
-							intersect: false
-						}
 					}
 				});
 			});
 		}
-
-
 
 		function formatRate(bytes) {
 			if (bytes < 1024) return bytes + ' B/s';
@@ -387,40 +378,30 @@
 			return (bytes / 1024 / 1024 / 1024).toFixed(0) + ' GB/s';
 		}
 
-		function updateCharts() {
-			Object.keys(history).forEach(key => {
+		function updateCharts(windowData) {
+			if (!windowData || windowData.length === 0) return;
+
+			const lastStat = windowData[windowData.length - 1];
+
+			Object.keys(statConfig).forEach(key => {
+				const cfg = statConfig[key];
 				const el = document.querySelector(`[data-rate="${key}"]`);
-				if (!el) return;
+				const val = lastStat[cfg.key];
 
-				const current = parseFloat(el.dataset.raw);
-				if (isNaN(current)) return;
-
-				const h = history[key];
-				let val;
-
-				if (h.prev === 0) {
-					val = 0;
-				} else if (h.isRate) {
-					val = Math.max(0, current - h.prev);
-				} else {
-					val = current;
-				}
-				h.prev = current;
-				h.values.push(val);
-
-				if (h.values.length > HISTORY_LENGTH) h.values.shift();
-
-				if (h.chart) {
-					h.chart.data.datasets[0].data = h.values;
-					h.chart.update('none');
+				if (el) {
+					if (cfg.isRate && key !== 'sent' && key !== 'recv') {
+						el.textContent = Math.round(val) + '/s';
+					} else if (key === 'sent' || key === 'recv') {
+						el.textContent = formatRate(val);
+					} else {
+						el.textContent = String(Math.round(val));
+					}
 				}
 
-				if (key === 'sent' || key === 'recv') {
-					el.textContent = formatRate(val);
-				} else if (key === 'requests' || key === 'errors') {
-					el.textContent = Math.round(val) + '/s';
-				} else {
-					el.textContent = String(Math.round(val));
+				const data = windowData.map(w => w[cfg.key]);
+				if (stats[key].chart) {
+					stats[key].chart.data.datasets[0].data = data;
+					stats[key].chart.update('none');
 				}
 			});
 		}
@@ -449,16 +430,14 @@
 				}
 			});
 		}
-		
+
 		function refreshStats() {
-			const stats = document.getElementById('stats-grid');
-			fetch('/dashboard/stats').then(r => r.text()).then(html => {
-				stats.innerHTML = html;
-				initCharts();
-				updateCharts();
+			fetch('/dashboard/stats').then(r => r.json()).then(data => {
+				updateCharts(data.window);
 			});
 		}
-		
+
+		initCharts();
 		refreshStats();
 		refreshProxies();
 		setInterval(refreshStats, 1000);
