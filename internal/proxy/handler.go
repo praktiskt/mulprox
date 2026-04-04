@@ -241,6 +241,26 @@ func httpRequestSize(req *http.Request, bodyLen int) int64 {
 	return size
 }
 
+type countingWriter struct {
+	http.ResponseWriter
+	n        int64
+	remoteID string
+	stats    stats.Store
+	lastSent int64
+}
+
+func (c *countingWriter) Write(p []byte) (int, error) {
+	n, err := c.ResponseWriter.Write(p)
+	if c.stats != nil && c.remoteID != "" && n > 0 {
+		delta := int64(n) - c.lastSent
+		if delta > 0 {
+			c.stats.RecordBytes(c.remoteID, 0, delta)
+			c.lastSent += delta
+		}
+	}
+	return n, err
+}
+
 // writeResponse copies the upstream response to the client and records stats.
 func (h *Handler) writeResponse(w http.ResponseWriter, resp *http.Response, remoteID string, sentBytes int64) {
 	for key, values := range resp.Header {
@@ -248,16 +268,19 @@ func (h *Handler) writeResponse(w http.ResponseWriter, resp *http.Response, remo
 			w.Header().Add(key, value)
 		}
 	}
-	w.WriteHeader(resp.StatusCode)
+
+	cw := &countingWriter{
+		ResponseWriter: w,
+		remoteID:       remoteID,
+		stats:          h.stats,
+	}
+	cw.WriteHeader(resp.StatusCode)
 
 	if h.stats != nil && remoteID != "" {
 		h.stats.RecordRequest(remoteID)
 	}
 
-	n, _ := io.Copy(w, resp.Body)
-	if h.stats != nil && remoteID != "" && (sentBytes > 0 || n > 0) {
-		h.stats.RecordBytes(remoteID, sentBytes, n)
-	}
+	_, _ = io.Copy(cw, resp.Body)
 }
 
 // handleConnect handles CONNECT requests by tunneling bytes between client
@@ -359,10 +382,37 @@ func (h *Handler) tunnel(clientConn, targetConn net.Conn, remoteID string) {
 		clientConn.Close()
 	}()
 
-	wg.Wait()
+	var lastSent, lastRecv int64
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
 
-	if h.stats != nil && remoteID != "" && (sent > 0 || received > 0) {
-		h.stats.RecordBytes(remoteID, sent, received)
+	for range ticker.C {
+		deltaSent := sent - lastSent
+		deltaRecv := received - lastRecv
+		if deltaSent > 0 || deltaRecv > 0 {
+			if h.stats != nil && remoteID != "" {
+				h.stats.RecordBytes(remoteID, deltaSent, deltaRecv)
+			}
+			lastSent = sent
+			lastRecv = received
+		}
+
+		if sent > 0 && received > 0 {
+			done := make(chan struct{})
+			go func() {
+				wg.Wait()
+				close(done)
+			}()
+			select {
+			case <-done:
+				ticker.Stop()
+				if h.stats != nil && remoteID != "" {
+					h.stats.RecordRequest(remoteID)
+				}
+				return
+			default:
+			}
+		}
 	}
 }
 

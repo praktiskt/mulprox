@@ -38,7 +38,7 @@ var serveCmd = &cobra.Command{
 		}
 
 		mullvadProvider := mullvad.New()
-		statsStore := stats.NewInMemoryStore()
+		statsStore := stats.NewInMemoryStore(logger)
 		statsCollector := stats.NewCollector(logger, statsStore, mullvadProvider, stats.DefaultConfig())
 
 		ctx, cancelStats := context.WithCancel(context.Background())

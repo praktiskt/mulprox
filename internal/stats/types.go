@@ -104,10 +104,15 @@ func (s *RemoteStore) GetAggregated() AggregatedStats {
 	s.remotes.Range(func(key, value interface{}) bool {
 		rs := value.(*RemoteStats)
 		reqCount := rs.RequestCount.Load()
+		bytesSent := rs.BytesSent.Load()
+		bytesRecv := rs.BytesRecv.Load()
+		errCount := rs.ErrorCount.Load()
+
 		agg.TotalRequests += reqCount
-		agg.TotalBytesSent += rs.BytesSent.Load()
-		agg.TotalBytesRecv += rs.BytesRecv.Load()
-		agg.TotalErrors += rs.ErrorCount.Load()
+		agg.TotalBytesSent += bytesSent
+		agg.TotalBytesRecv += bytesRecv
+		agg.TotalErrors += errCount
+		agg.TotalRemotes++
 		if rs.EgressIP != "" && rs.Health.Online {
 			agg.ActiveRemotes++
 		}
@@ -115,11 +120,6 @@ func (s *RemoteStore) GetAggregated() AggregatedStats {
 			agg.OnlineRemotes++
 		}
 		agg.RequestsPerRemote[rs.RemoteID] = reqCount
-		return true
-	})
-
-	s.remotes.Range(func(key, value interface{}) bool {
-		agg.TotalRemotes++
 		return true
 	})
 

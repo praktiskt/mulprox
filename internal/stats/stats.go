@@ -49,6 +49,7 @@ type pendingUpdate struct {
 
 type InMemoryStore struct {
 	*RemoteStore
+	logger        *slog.Logger
 	flushInterval time.Duration
 	updateCh      chan interface{}
 	stopCh        chan struct{}
@@ -63,9 +64,10 @@ type InMemoryStore struct {
 	prevTotalErrors    uint64
 }
 
-func NewInMemoryStore() *InMemoryStore {
+func NewInMemoryStore(logger *slog.Logger) *InMemoryStore {
 	return &InMemoryStore{
 		RemoteStore:   NewRemoteStore(),
+		logger:        logger,
 		flushInterval: DefaultFlushInterval,
 		updateCh:      make(chan interface{}, 10000),
 		stopCh:        make(chan struct{}),
@@ -301,6 +303,9 @@ func (s *InMemoryStore) sendNonBlocking(update interface{}) {
 	select {
 	case s.updateCh <- update:
 	default:
+		if s.logger != nil {
+			s.logger.Warn("stats channel full, dropping update")
+		}
 	}
 }
 
@@ -309,7 +314,16 @@ func (s *InMemoryStore) RecordRequest(remoteID string) {
 }
 
 func (s *InMemoryStore) RecordBytes(remoteID string, sent, received int64) {
-	s.sendNonBlocking(statBytes{remoteID: remoteID, sent: sent, received: received})
+	if !s.started {
+		return
+	}
+	stats := s.RemoteStore.GetOrCreate(remoteID)
+	if sent > 0 {
+		stats.BytesSent.Add(uint64(sent))
+	}
+	if received > 0 {
+		stats.BytesRecv.Add(uint64(received))
+	}
 }
 
 func (s *InMemoryStore) RecordError(remoteID string) {
