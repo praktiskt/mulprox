@@ -90,20 +90,6 @@ func (p *Provider) SOCKS5DialerFromAddr(socksAddr string, timeout time.Duration)
 	return &timeoutDialer{dialer, timeout}, nil
 }
 
-func (p *Provider) RandomSOCKS5Addr() (string, error) {
-	mullvadServers, err := p.FetchMullvadList(context.Background())
-	if err != nil {
-		return "", err
-	}
-
-	if len(mullvadServers) == 0 {
-		return FallbackMullvad, nil
-	}
-
-	s := mullvadServers[rand.Intn(len(mullvadServers))]
-	return fmt.Sprintf("%s:%d", s.SOCKS5, s.SOCKSPort), nil
-}
-
 type Filter struct {
 	Countries []string
 	Cities    []string
@@ -396,12 +382,6 @@ func (p *Provider) filterServers(fn func(Server) bool) []Server {
 func (p *Provider) GetServersByCountry(country string) []Server {
 	return p.filterServers(func(s Server) bool {
 		return strings.EqualFold(s.Country, country)
-	})
-}
-
-func (p *Provider) GetServersByCity(city string) []Server {
-	return p.filterServers(func(s Server) bool {
-		return strings.EqualFold(s.City, city)
 	})
 }
 

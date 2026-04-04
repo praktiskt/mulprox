@@ -24,8 +24,6 @@ type RemoteStats struct {
 	BytesSent    atomic.Uint64 `json:"bytes_sent"`
 	BytesRecv    atomic.Uint64 `json:"bytes_recv"`
 	ErrorCount   atomic.Uint64 `json:"error_count"`
-	LatencySum   atomic.Int64  `json:"latency_sum"`
-	LatencyCount atomic.Uint64 `json:"latency_count"`
 	Health       RemoteHealth  `json:"health"`
 	LastUsed     time.Time     `json:"last_used"`
 	CreatedAt    time.Time     `json:"created_at"`

@@ -23,7 +23,6 @@ const (
 type Store interface {
 	RecordRequest(remoteID string)
 	RecordBytes(remoteID string, sent, received int64)
-	RecordLatency(remoteID string, latency time.Duration)
 	RecordError(remoteID string)
 	SetRemoteEgressIP(remoteID string, ip string)
 	SetRemoteMetadata(remoteID, hostname, country, city string)
@@ -37,8 +36,6 @@ type pendingUpdate struct {
 	requestCount atomic.Uint64
 	bytesSent    atomic.Uint64
 	bytesRecv    atomic.Uint64
-	latencySum   atomic.Int64
-	latencyCount atomic.Uint64
 	errorCount   atomic.Uint64
 	egressIP     string
 	hostname     string
@@ -186,15 +183,6 @@ func (s *InMemoryStore) flush() {
 				}
 				p.bytesSent.Add(uint64(u.sent))
 				p.bytesRecv.Add(uint64(u.received))
-			case statLatency:
-				remoteID := u.remoteID
-				p, ok := pending[remoteID]
-				if !ok {
-					p = &pendingUpdate{}
-					pending[remoteID] = p
-				}
-				p.latencySum.Add(int64(u.latency))
-				p.latencyCount.Add(1)
 			case stringWithID:
 				if u.isError {
 					remoteID := u.remoteID
@@ -249,8 +237,6 @@ apply:
 		rc := p.requestCount.Load()
 		bs := p.bytesSent.Load()
 		br := p.bytesRecv.Load()
-		ls := time.Duration(p.latencySum.Load())
-		lc := p.latencyCount.Load()
 		ec := p.errorCount.Load()
 		ip := p.egressIP
 		hn := p.hostname
@@ -261,7 +247,7 @@ apply:
 		hm := p.hasMetadata
 		hhc := p.hasHealth
 
-		if rc > 0 || bs > 0 || br > 0 || lc > 0 || ec > 0 || he || hm || hhc {
+		if rc > 0 || bs > 0 || br > 0 || ec > 0 || he || hm || hhc {
 			stats := s.GetOrCreate(remoteID)
 			if rc > 0 {
 				stats.RequestCount.Add(rc)
@@ -270,14 +256,10 @@ apply:
 				stats.BytesSent.Add(bs)
 				stats.BytesRecv.Add(br)
 			}
-			if lc > 0 {
-				stats.LatencySum.Add(int64(ls))
-				stats.LatencyCount.Add(lc)
-			}
 			if ec > 0 {
 				stats.ErrorCount.Add(ec)
 			}
-			if rc > 0 || lc > 0 || ec > 0 {
+			if rc > 0 || ec > 0 {
 				stats.LastUsed = time.Now()
 			}
 			if he {
@@ -299,10 +281,6 @@ type (
 	statBytes struct {
 		remoteID       string
 		sent, received int64
-	}
-	statLatency struct {
-		remoteID string
-		latency  time.Duration
 	}
 	stringWithID struct {
 		remoteID string
@@ -332,10 +310,6 @@ func (s *InMemoryStore) RecordRequest(remoteID string) {
 
 func (s *InMemoryStore) RecordBytes(remoteID string, sent, received int64) {
 	s.sendNonBlocking(statBytes{remoteID: remoteID, sent: sent, received: received})
-}
-
-func (s *InMemoryStore) RecordLatency(remoteID string, latency time.Duration) {
-	s.sendNonBlocking(statLatency{remoteID: remoteID, latency: latency})
 }
 
 func (s *InMemoryStore) RecordError(remoteID string) {
