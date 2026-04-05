@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand"
 	"net"
 	"net/http"
 	"strings"
@@ -414,6 +415,9 @@ func (c *Collector) Stop() {
 func (c *Collector) runHealthChecker(ctx context.Context) {
 	defer c.wg.Done()
 
+	jitter := time.Duration(rand.Int63n(int64(c.config.HealthCheckInterval)))
+	time.Sleep(jitter)
+
 	ticker := time.NewTicker(c.config.HealthCheckInterval)
 	defer ticker.Stop()
 
@@ -433,6 +437,9 @@ func (c *Collector) runHealthChecker(ctx context.Context) {
 
 func (c *Collector) runEgressIPChecker(ctx context.Context) {
 	defer c.wg.Done()
+
+	jitter := time.Duration(rand.Int63n(int64(c.config.EgressIPCheckInterval)))
+	time.Sleep(jitter)
 
 	ticker := time.NewTicker(c.config.EgressIPCheckInterval)
 	defer ticker.Stop()
