@@ -14,7 +14,6 @@ import (
 var templatesFS embed.FS
 
 var DashboardTemplate *template.Template
-var StatsTemplate *template.Template
 var ProxiesTableTemplate *template.Template
 
 func init() {
@@ -30,17 +29,12 @@ func init() {
 	if err != nil {
 		panic(err)
 	}
-	statsContent, err := templatesFS.ReadFile("templates/stats.html")
-	if err != nil {
-		panic(err)
-	}
 	proxiesContent, err := templatesFS.ReadFile("templates/proxies.html")
 	if err != nil {
 		panic(err)
 	}
 
 	DashboardTemplate = template.Must(template.New("dashboard").Funcs(funcs).Parse(string(dashboardContent)))
-	StatsTemplate = template.Must(template.New("stats").Funcs(funcs).Parse(string(statsContent)))
 	ProxiesTableTemplate = template.Must(template.New("proxies").Funcs(funcs).Parse(string(proxiesContent)))
 }
 
