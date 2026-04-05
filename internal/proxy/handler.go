@@ -178,7 +178,7 @@ func (h *Handler) proxyHTTP(ctx context.Context, w http.ResponseWriter, r *http.
 // roundTrip performs a single proxy attempt: resolves a SOCKS5 server, builds
 // a transport, and executes the request.
 func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL string, body []byte) (*http.Response, string, int64, error) {
-	socksAddr, remoteID, err := h.resolveSOCKS5(r)
+	socksAddr, remoteID, err := h.resolveSOCKS5(ctx, r)
 	if err != nil {
 		return nil, "", 0, err
 	}
@@ -275,6 +275,9 @@ func (h *Handler) writeResponse(w http.ResponseWriter, resp *http.Response, remo
 // handleConnect handles CONNECT requests by tunneling bytes between client
 // and the upstream SOCKS5 target.
 func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
+	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
+	defer cancel()
+
 	host := r.Host
 	if host == "" {
 		host = r.URL.Host
@@ -286,7 +289,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	socksAddr, remoteID, err := h.resolveSOCKS5(r)
+	socksAddr, remoteID, err := h.resolveSOCKS5(ctx, r)
 	if err != nil {
 		h.logger.Error("failed to get Mullvad server", slog.String("error", err.Error()))
 		http.Error(w, "failed to create proxy session", http.StatusServiceUnavailable)
@@ -418,7 +421,7 @@ func (h *Handler) tunnel(clientConn, targetConn net.Conn, remoteID string) {
 //	seed=123,country=Stockholm
 //
 // Parameter keys are case-insensitive.
-func (h *Handler) resolveSOCKS5(r *http.Request) (addr, remoteID string, err error) {
+func (h *Handler) resolveSOCKS5(ctx context.Context, r *http.Request) (addr, remoteID string, err error) {
 	filter := h.baseFilter
 
 	if v := r.Header.Get("Proxy-Authorization"); v != "" {
@@ -437,7 +440,7 @@ func (h *Handler) resolveSOCKS5(r *http.Request) (addr, remoteID string, err err
 		return stats == nil || stats.IsOnline()
 	}
 
-	server, err := h.mullvad.GetFilteredServerWithHealth(filter, isOnline)
+	server, err := h.mullvad.GetFilteredServerWithHealth(ctx, filter, isOnline)
 	if err == nil {
 		if h.stats != nil {
 			h.stats.SetRemoteMetadata(server.Hostname, server.Hostname, server.Country, server.City)
@@ -447,7 +450,7 @@ func (h *Handler) resolveSOCKS5(r *http.Request) (addr, remoteID string, err err
 
 	h.logger.Debug("no healthy server found, falling back to any server", slog.String("error", err.Error()))
 
-	server, err = h.mullvad.GetFilteredServer(filter)
+	server, err = h.mullvad.GetFilteredServer(ctx, filter)
 	if err != nil {
 		return "", "", err
 	}

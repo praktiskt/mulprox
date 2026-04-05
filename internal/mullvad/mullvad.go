@@ -109,8 +109,8 @@ func stringInSlice(ss []string, s string) bool {
 	return false
 }
 
-func (p *Provider) GetFilteredServer(filter Filter) (Server, error) {
-	mullvadServers, err := p.FetchMullvadList(context.Background())
+func (p *Provider) GetFilteredServer(ctx context.Context, filter Filter) (Server, error) {
+	mullvadServers, err := p.FetchMullvadList(ctx)
 	if err != nil {
 		return Server{}, err
 	}
@@ -135,8 +135,8 @@ func (p *Provider) GetFilteredServer(filter Filter) (Server, error) {
 	return server, nil
 }
 
-func (p *Provider) GetFilteredServerWithHealth(filter Filter, isOnline func(string) bool) (Server, error) {
-	mullvadServers, err := p.FetchMullvadList(context.Background())
+func (p *Provider) GetFilteredServerWithHealth(ctx context.Context, filter Filter, isOnline func(string) bool) (Server, error) {
+	mullvadServers, err := p.FetchMullvadList(ctx)
 	if err != nil {
 		return Server{}, err
 	}

@@ -18,12 +18,12 @@ func TestGetFilteredServer(t *testing.T) {
 	}
 
 	t.Run("seed selection", func(t *testing.T) {
-		s1, err := p.GetFilteredServer(Filter{Seed: 12345})
+		s1, err := p.GetFilteredServer(ctx, Filter{Seed: 12345})
 		if err != nil {
 			t.Fatalf("failed to get server by seed: %v", err)
 		}
 
-		s2, err := p.GetFilteredServer(Filter{Seed: 12345})
+		s2, err := p.GetFilteredServer(ctx, Filter{Seed: 12345})
 		if err != nil {
 			t.Fatalf("failed to get server by seed: %v", err)
 		}
@@ -35,7 +35,7 @@ func TestGetFilteredServer(t *testing.T) {
 	})
 
 	t.Run("country filter", func(t *testing.T) {
-		s, err := p.GetFilteredServer(Filter{Countries: []string{"Sweden"}})
+		s, err := p.GetFilteredServer(ctx, Filter{Countries: []string{"Sweden"}})
 		if err != nil {
 			t.Fatalf("failed to get server by country: %v", err)
 		}
@@ -46,11 +46,11 @@ func TestGetFilteredServer(t *testing.T) {
 	})
 
 	t.Run("country+seed filter", func(t *testing.T) {
-		s1, err := p.GetFilteredServer(Filter{Countries: []string{"Sweden"}, Seed: 42})
+		s1, err := p.GetFilteredServer(ctx, Filter{Countries: []string{"Sweden"}, Seed: 42})
 		if err != nil {
 			t.Fatalf("failed to get server: %v", err)
 		}
-		s2, err := p.GetFilteredServer(Filter{Countries: []string{"Sweden"}, Seed: 42})
+		s2, err := p.GetFilteredServer(ctx, Filter{Countries: []string{"Sweden"}, Seed: 42})
 		if err != nil {
 			t.Fatalf("failed to get server: %v", err)
 		}
@@ -61,7 +61,7 @@ func TestGetFilteredServer(t *testing.T) {
 	})
 
 	t.Run("city filter", func(t *testing.T) {
-		s, err := p.GetFilteredServer(Filter{Cities: []string{"Stockholm"}})
+		s, err := p.GetFilteredServer(ctx, Filter{Cities: []string{"Stockholm"}})
 		if err != nil {
 			t.Fatalf("failed to get server by city: %v", err)
 		}
@@ -73,7 +73,7 @@ func TestGetFilteredServer(t *testing.T) {
 
 	t.Run("owned filter", func(t *testing.T) {
 		owned := true
-		s, err := p.GetFilteredServer(Filter{Owned: &owned})
+		s, err := p.GetFilteredServer(ctx, Filter{Owned: &owned})
 		if err != nil {
 			t.Fatalf("failed to get owned server: %v", err)
 		}
@@ -84,7 +84,7 @@ func TestGetFilteredServer(t *testing.T) {
 	})
 
 	t.Run("min speed filter", func(t *testing.T) {
-		s, err := p.GetFilteredServer(Filter{MinSpeed: 100})
+		s, err := p.GetFilteredServer(ctx, Filter{MinSpeed: 100})
 		if err != nil {
 			t.Fatalf("failed to get server by speed: %v", err)
 		}
@@ -95,7 +95,7 @@ func TestGetFilteredServer(t *testing.T) {
 	})
 
 	t.Run("multihop filter", func(t *testing.T) {
-		s, err := p.GetFilteredServer(Filter{Multihop: true})
+		s, err := p.GetFilteredServer(ctx, Filter{Multihop: true})
 		if err != nil {
 			t.Fatalf("failed to get multihop server: %v", err)
 		}
@@ -107,7 +107,7 @@ func TestGetFilteredServer(t *testing.T) {
 
 	t.Run("combined filters", func(t *testing.T) {
 		owned := true
-		s, err := p.GetFilteredServer(Filter{
+		s, err := p.GetFilteredServer(ctx, Filter{
 			Countries: []string{"Sweden"},
 			Owned:     &owned,
 			MinSpeed:  100,

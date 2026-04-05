@@ -28,7 +28,7 @@ var getCmd = &cobra.Command{
 
 		p := mullvad.New()
 
-		server, err := p.GetFilteredServer(buildBaseFilter())
+		server, err := p.GetFilteredServer(ctx, buildBaseFilter())
 		if err != nil {
 			return fmt.Errorf("failed to get server: %w", err)
 		}
