@@ -318,13 +318,7 @@ func (s *InMemoryStore) RecordBytes(remoteID string, sent, received int64) {
 	if !s.started {
 		return
 	}
-	stats := s.RemoteStore.GetOrCreate(remoteID)
-	if sent > 0 {
-		stats.BytesSent.Add(uint64(sent))
-	}
-	if received > 0 {
-		stats.BytesRecv.Add(uint64(received))
-	}
+	s.sendNonBlocking(statBytes{remoteID: remoteID, sent: sent, received: received})
 }
 
 func (s *InMemoryStore) RecordError(remoteID string) {

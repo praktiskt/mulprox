@@ -59,16 +59,6 @@ func (p *ProxyAuth) Apply(filter *mullvad.Filter) {
 	}
 }
 
-var transportPool = sync.Pool{
-	New: func() interface{} {
-		return &http.Transport{
-			MaxIdleConns:        100,
-			MaxIdleConnsPerHost: 100,
-			IdleConnTimeout:     30 * time.Second,
-		}
-	},
-}
-
 var bufferPool = sync.Pool{
 	New: func() interface{} {
 		return make([]byte, copyBufSize)
@@ -199,7 +189,6 @@ func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL stri
 	}
 
 	tr := h.getTransport(socksDialer)
-	defer h.putTransport(tr)
 
 	var reqBody io.Reader
 	if body != nil {
@@ -492,23 +481,19 @@ func parseProxyAuthHeader(header string) (*ProxyAuth, error) {
 	return ParseProxyAuth(connStr)
 }
 
-// getTransport returns a pooled http.Transport configured to dial through the
+// getTransport returns a fresh http.Transport configured to dial through the
 // given SOCKS5 proxy with keep-alives enabled.
 func (h *Handler) getTransport(dialer proxy.Dialer) *http.Transport {
-	t := transportPool.Get().(*http.Transport)
-	t.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		return dialer.Dial(network, addr)
+	return &http.Transport{
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialer.Dial(network, addr)
+		},
+		TLSHandshakeTimeout: h.timeout,
+		DisableKeepAlives:   false,
+		MaxIdleConnsPerHost: 100,
+		MaxIdleConns:        100,
+		IdleConnTimeout:     30 * time.Second,
 	}
-	t.TLSHandshakeTimeout = h.timeout
-	t.DisableKeepAlives = false
-	t.MaxIdleConnsPerHost = 100
-	return t
-}
-
-// putTransport returns the transport to the pool without closing idle connections.
-func (h *Handler) putTransport(t *http.Transport) {
-	t.DialContext = nil
-	transportPool.Put(t)
 }
 
 // readBody buffers the request body so it can be replayed across retries.
