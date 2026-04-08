@@ -603,7 +603,6 @@ func (c *Collector) measureSOCKS5Health(ctx context.Context, socksHost string, s
 
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   5 * time.Second,
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://am.i.mullvad.net/json", nil)
