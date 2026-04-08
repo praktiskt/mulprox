@@ -68,13 +68,13 @@ var bufferPool = sync.Pool{
 type Handler struct {
 	logger     *slog.Logger
 	timeout    time.Duration
-	mullvad    *mullvad.Provider
+	mullvad    mullvad.ServerProvider
 	httpsOnly  bool
 	stats      stats.Store
 	baseFilter mullvad.Filter
 }
 
-func New(logger *slog.Logger, timeout time.Duration, mullvad *mullvad.Provider, httpsOnly bool, statsStore stats.Store, baseFilter mullvad.Filter) *Handler {
+func New(logger *slog.Logger, timeout time.Duration, mullvad mullvad.ServerProvider, httpsOnly bool, statsStore stats.Store, baseFilter mullvad.Filter) *Handler {
 	return &Handler{
 		logger:     logger,
 		timeout:    timeout,

@@ -82,6 +82,13 @@ type Filter struct {
 	Seed      int64
 }
 
+type ServerProvider interface {
+	FetchMullvadList(ctx context.Context) ([]Server, error)
+	GetFilteredServer(ctx context.Context, filter Filter) (Server, error)
+	GetFilteredServerWithHealth(ctx context.Context, filter Filter, isOnline func(string) bool) (Server, error)
+	SOCKS5DialerFromAddr(socksAddr string, timeout time.Duration) (proxy.Dialer, error)
+}
+
 func stringInSlice(ss []string, s string) bool {
 	for _, v := range ss {
 		if strings.EqualFold(v, s) {

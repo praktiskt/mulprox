@@ -363,14 +363,14 @@ func (s *InMemoryStore) getWindow() []WindowStat {
 type Collector struct {
 	logger     *slog.Logger
 	store      Store
-	mullvad    *mullvad.Provider
+	mullvad    mullvad.ServerProvider
 	config     Config
 	httpClient *http.Client
 	stopCh     chan struct{}
 	wg         sync.WaitGroup
 }
 
-func NewCollector(logger *slog.Logger, store Store, mullvadProvider *mullvad.Provider, config Config) *Collector {
+func NewCollector(logger *slog.Logger, store Store, mullvadProvider mullvad.ServerProvider, config Config) *Collector {
 	return &Collector{
 		logger:  logger,
 		store:   store,
