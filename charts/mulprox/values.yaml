@@ -59,6 +59,17 @@ health:
     failureThreshold: 30
 
 affinity: {}
+dnsConfig:
+  nameservers:
+    - 1.1.1.1
+    - 8.8.8.8
+  searches:
+    - default.svc.cluster.local
+    - svc.cluster.local
+    - cluster.local
+  options:
+    - name: ndots
+      value: "2"
 # nodeAffinity:
 #   preferredDuringSchedulingIgnoredDuringExecution:
 #   - weight: 1
