@@ -453,6 +453,9 @@ func (c *Collector) runEgressIPChecker(ctx context.Context) {
 }
 
 func (c *Collector) checkHealth(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, c.config.HealthCheckTimeout)
+	defer cancel()
+
 	servers, err := c.mullvad.FetchMullvadList(ctx)
 	if err != nil {
 		c.logger.Error("failed to fetch server list for health check", slog.String("error", err.Error()))
@@ -625,6 +628,9 @@ func (c *Collector) measureSOCKS5Health(ctx context.Context, socksHost string, s
 }
 
 func (c *Collector) checkEgressIPs(ctx context.Context) {
+	ctx, cancel := context.WithTimeout(ctx, c.config.EgressIPCheckTimeout)
+	defer cancel()
+
 	servers, err := c.mullvad.FetchMullvadList(ctx)
 	if err != nil {
 		c.logger.Error("failed to fetch server list for egress IP check", slog.String("error", err.Error()))

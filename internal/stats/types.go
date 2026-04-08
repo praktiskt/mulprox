@@ -53,16 +53,20 @@ type WindowStat struct {
 
 type Config struct {
 	HealthCheckInterval   time.Duration
+	HealthCheckTimeout    time.Duration
 	PingCount             int
 	EgressIPCheckInterval time.Duration
+	EgressIPCheckTimeout  time.Duration
 	FastHealthCheck       bool
 }
 
 func DefaultConfig() Config {
 	return Config{
 		HealthCheckInterval:   30 * time.Second,
+		HealthCheckTimeout:    30 * time.Second,
 		PingCount:             2,
 		EgressIPCheckInterval: 5 * time.Minute,
+		EgressIPCheckTimeout:  2 * time.Minute,
 		FastHealthCheck:       false,
 	}
 }
