@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"time"
 
@@ -40,10 +41,10 @@ var getCmd = &cobra.Command{
 		)
 		defer c.Close()
 
-		logger.Debug("fetching URL", slog.String("url", url), slog.String("method", "GET"))
+		logger.Debug("fetching URL", slog.String("url", url), slog.String("method", http.MethodGet))
 
 		req := &client.Request{
-			Method:  "GET",
+			Method:  http.MethodGet,
 			URL:     url,
 			Headers: map[string][]string{"User-Agent": {"mulprox/1.0"}},
 		}

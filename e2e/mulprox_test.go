@@ -83,7 +83,7 @@ func TestSeedDeterminism(t *testing.T) {
 				},
 			},
 		}
-		req, err := http.NewRequestWithContext(ctx, "GET", "https://httpbin.org/ip", nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://httpbin.org/ip", nil)
 		if err != nil {
 			t.Fatalf("failed to create request: %v", err)
 		}
