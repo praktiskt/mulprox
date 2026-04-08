@@ -377,7 +377,7 @@ func NewCollector(logger *slog.Logger, store Store, mullvadProvider mullvad.Serv
 		mullvad: mullvadProvider,
 		config:  config,
 		httpClient: &http.Client{
-			Timeout: 10 * time.Second,
+			Timeout: config.HealthCheckHTTPTimeout,
 		},
 		stopCh: make(chan struct{}),
 	}
@@ -592,7 +592,7 @@ func (c *Collector) measureSOCKS5Latency(socksHost string, socksPort int) int64 
 func (c *Collector) measureSOCKS5Health(ctx context.Context, socksHost string, socksPort int) int64 {
 	socksAddr := fmt.Sprintf("%s:%d", socksHost, socksPort)
 
-	dialer, err := c.mullvad.SOCKS5DialerFromAddr(socksAddr, 5*time.Second)
+	dialer, err := c.mullvad.SOCKS5DialerFromAddr(socksAddr, c.config.SOCKSDialTimeout)
 	if err != nil {
 		return 0
 	}
@@ -676,7 +676,7 @@ func (c *Collector) checkEgressIPForServer(ctx context.Context, socksHost string
 
 	client := &http.Client{
 		Transport: transport,
-		Timeout:   10 * time.Second,
+		Timeout:   c.config.EgressIPCheckHTTPTimeout,
 	}
 
 	resp, err := client.Get("https://api.ipify.org?format=text")
