@@ -66,12 +66,13 @@ var bufferPool = sync.Pool{
 }
 
 type Handler struct {
-	logger     *slog.Logger
-	timeout    time.Duration
-	mullvad    mullvad.ServerProvider
-	httpsOnly  bool
-	stats      stats.Store
-	baseFilter mullvad.Filter
+	logger         *slog.Logger
+	timeout        time.Duration
+	mullvad        mullvad.ServerProvider
+	httpsOnly      bool
+	stats          stats.Store
+	baseFilter     mullvad.Filter
+	transportCache sync.Map
 }
 
 func New(logger *slog.Logger, timeout time.Duration, mullvad mullvad.ServerProvider, httpsOnly bool, statsStore stats.Store, baseFilter mullvad.Filter) *Handler {
@@ -188,7 +189,7 @@ func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL stri
 		return nil, remoteID, 0, err
 	}
 
-	tr := h.getTransport(socksDialer)
+	tr := h.getTransport(socksAddr, socksDialer)
 
 	var reqBody io.Reader
 	if body != nil {
@@ -484,10 +485,13 @@ func parseProxyAuthHeader(header string) (*ProxyAuth, error) {
 	return ParseProxyAuth(connStr)
 }
 
-// getTransport returns a fresh http.Transport configured to dial through the
-// given SOCKS5 proxy with keep-alives enabled.
-func (h *Handler) getTransport(dialer proxy.Dialer) *http.Transport {
-	return &http.Transport{
+// getTransport returns a cached http.Transport for the given SOCKS5 address.
+func (h *Handler) getTransport(socksAddr string, dialer proxy.Dialer) *http.Transport {
+	if tr, ok := h.transportCache.Load(socksAddr); ok {
+		return tr.(*http.Transport)
+	}
+
+	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return dialer.Dial(network, addr)
 		},
@@ -497,6 +501,9 @@ func (h *Handler) getTransport(dialer proxy.Dialer) *http.Transport {
 		MaxIdleConns:        100,
 		IdleConnTimeout:     30 * time.Second,
 	}
+
+	h.transportCache.Store(socksAddr, tr)
+	return tr
 }
 
 // readBody buffers the request body so it can be replayed across retries.
