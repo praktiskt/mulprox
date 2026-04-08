@@ -630,9 +630,22 @@ func (c *Collector) checkEgressIPs(ctx context.Context) {
 		return
 	}
 
+	var wg sync.WaitGroup
+	sem := make(chan struct{}, 20)
+
 	for _, server := range servers {
-		go c.checkEgressIPForServer(ctx, server.SOCKS5, server.SOCKSPort, server.Hostname, server.Hostname, server.Country, server.City)
+		sem <- struct{}{}
+		wg.Add(1)
+		go func(s mullvad.Server) {
+			defer func() {
+				wg.Done()
+				<-sem
+			}()
+			c.checkEgressIPForServer(ctx, s.SOCKS5, s.SOCKSPort, s.Hostname, s.Hostname, s.Country, s.City)
+		}(server)
 	}
+
+	wg.Wait()
 }
 
 func (c *Collector) checkEgressIPForServer(ctx context.Context, socksHost string, socksPort int, remoteID, hostname, country, city string) {
