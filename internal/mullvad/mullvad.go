@@ -63,24 +63,6 @@ func New() *Provider {
 	}
 }
 
-func (p *Provider) Session(ctx context.Context, timeout time.Duration) (*client.Client, error) {
-	mullvadServers, err := p.FetchMullvadList(ctx)
-	if err != nil {
-		return nil, err
-	}
-
-	server := FallbackMullvad
-	if len(mullvadServers) > 0 {
-		s := mullvadServers[rand.Intn(len(mullvadServers))]
-		server = fmt.Sprintf("%s:%d", s.SOCKS5, s.SOCKSPort)
-	}
-
-	return client.NewSession("chrome-latest",
-		client.WithTimeout(timeout),
-		client.WithProxy("socks5://"+server),
-	), nil
-}
-
 func (p *Provider) SOCKS5DialerFromAddr(socksAddr string, timeout time.Duration) (proxy.Dialer, error) {
 	dialer, err := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
 	if err != nil {
@@ -364,35 +346,4 @@ func parseMullvadRelays(html string) []Server {
 	}
 
 	return servers
-}
-
-func (p *Provider) filterServers(fn func(Server) bool) []Server {
-	p.mu.RLock()
-	defer p.mu.RUnlock()
-
-	var result []Server
-	for _, s := range p.mullvadList {
-		if fn(s) {
-			result = append(result, s)
-		}
-	}
-	return result
-}
-
-func (p *Provider) GetServersByCountry(country string) []Server {
-	return p.filterServers(func(s Server) bool {
-		return strings.EqualFold(s.Country, country)
-	})
-}
-
-func (p *Provider) GetOwnedServers() []Server {
-	return p.filterServers(func(s Server) bool {
-		return s.Owned
-	})
-}
-
-func (p *Provider) GetMultihopServers() []Server {
-	return p.filterServers(func(s Server) bool {
-		return s.Multihop > 0
-	})
 }
