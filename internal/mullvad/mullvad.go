@@ -22,7 +22,6 @@ const (
 	MullvadListURL      = "https://mullvad.net/en/servers"
 	MullvadURL          = "https://am.i.mullvad.net/json"
 	MullvadListCacheTTL = 3 * time.Hour
-	FallbackMullvad     = "10.64.0.1:1080"
 )
 
 type Status struct {
