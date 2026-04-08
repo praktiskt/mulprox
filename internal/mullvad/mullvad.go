@@ -219,7 +219,9 @@ func (d *timeoutDialer) Dial(network, address string) (net.Conn, error) {
 
 func (p *Provider) CheckMullvadStatus(ctx context.Context) (bool, error) {
 	if v := p.mullvadStatus.Load(); v != nil {
-		return v.(bool), nil
+		if b, ok := v.(bool); ok {
+			return b, nil
+		}
 	}
 
 	resp, err := p.httpClient.Get(ctx, MullvadURL, nil)
