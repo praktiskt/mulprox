@@ -547,13 +547,15 @@ func (c *Collector) pingServer(ctx context.Context, socksHost string, socksPort 
 		}
 	}
 
-	if c.measureSOCKS5Health(ctx, socksHost, socksPort) > 0 {
+	healthLatency := c.measureSOCKS5Health(ctx, socksHost, socksPort)
+	if healthLatency > 0 {
 		online = true
 	}
 
 	health := RemoteHealth{
-		Online:    online,
-		LastCheck: time.Now(),
+		Online:        online,
+		HealthLatency: healthLatency,
+		LastCheck:     time.Now(),
 	}
 
 	if len(tcpPings) > 0 {

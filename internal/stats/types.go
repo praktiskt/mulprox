@@ -7,11 +7,12 @@ import (
 )
 
 type RemoteHealth struct {
-	Ping1ms   int64     `json:"ping_1ms"`
-	Ping8ms   int64     `json:"ping_8ms"`
-	PingMean  float64   `json:"ping_mean"`
-	Online    bool      `json:"online"`
-	LastCheck time.Time `json:"last_check"`
+	Ping1ms       int64     `json:"ping_1ms"`
+	Ping8ms       int64     `json:"ping_8ms"`
+	PingMean      float64   `json:"ping_mean"`
+	HealthLatency int64     `json:"health_latency_ms"`
+	Online        bool      `json:"online"`
+	LastCheck     time.Time `json:"last_check"`
 }
 
 type RemoteStats struct {
