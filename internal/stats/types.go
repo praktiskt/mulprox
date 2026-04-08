@@ -52,7 +52,7 @@ type WindowStat struct {
 
 type Config struct {
 	HealthCheckInterval   time.Duration
-	PingTargets           []string
+	PingCount             int
 	EgressIPCheckInterval time.Duration
 	FastHealthCheck       bool
 }
@@ -60,9 +60,9 @@ type Config struct {
 func DefaultConfig() Config {
 	return Config{
 		HealthCheckInterval:   30 * time.Second,
-		PingTargets:           []string{"1.1.1.1", "8.8.8.8"},
+		PingCount:             2,
 		EgressIPCheckInterval: 5 * time.Minute,
-		FastHealthCheck:       true,
+		FastHealthCheck:       false,
 	}
 }
 
@@ -115,10 +115,8 @@ func (s *RemoteStore) GetAggregated() AggregatedStats {
 		agg.TotalBytesRecv += bytesRecv
 		agg.TotalErrors += errCount
 		agg.TotalRemotes++
-		if rs.EgressIP != "" && rs.Health.Online {
-			agg.ActiveRemotes++
-		}
 		if rs.Health.Online {
+			agg.ActiveRemotes++
 			agg.OnlineRemotes++
 		}
 		agg.RequestsPerRemote[rs.RemoteID] = reqCount

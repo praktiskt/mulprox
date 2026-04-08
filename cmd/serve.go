@@ -40,8 +40,8 @@ var serveCmd = &cobra.Command{
 		mullvadProvider := mullvad.New()
 		statsStore := stats.NewInMemoryStore(logger)
 		cfg := stats.DefaultConfig()
-		if os.Getenv("FAST_HEALTH_CHECK") == "true" {
-			cfg.FastHealthCheck = true
+		if os.Getenv("FAST_HEALTH_CHECK") != "" {
+			cfg.FastHealthCheck = os.Getenv("FAST_HEALTH_CHECK") == "true"
 		}
 		statsCollector := stats.NewCollector(logger, statsStore, mullvadProvider, cfg)
 

@@ -540,7 +540,7 @@ func (c *Collector) pingServer(ctx context.Context, socksHost string, socksPort 
 	var tcpPings []int64
 	online := false
 
-	for i := 0; i < 1; i++ {
+	for i := 0; i < c.config.PingCount; i++ {
 		latency := c.measureSOCKS5Latency(socksHost, socksPort)
 		if latency > 0 {
 			tcpPings = append(tcpPings, latency)
