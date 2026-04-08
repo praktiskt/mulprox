@@ -39,10 +39,13 @@ var serveCmd = &cobra.Command{
 
 		mullvadProvider := mullvad.New()
 		statsStore := stats.NewInMemoryStore(logger)
-		statsCollector := stats.NewCollector(logger, statsStore, mullvadProvider, stats.DefaultConfig())
+		cfg := stats.DefaultConfig()
+		if os.Getenv("FAST_HEALTH_CHECK") == "true" {
+			cfg.FastHealthCheck = true
+		}
+		statsCollector := stats.NewCollector(logger, statsStore, mullvadProvider, cfg)
 
 		ctx, cancelStats := context.WithCancel(context.Background())
-		statsCollector.Start(ctx)
 		statsStore.Start()
 
 		proxyHandler := proxy.New(logger, timeout, mullvadProvider, httpsOnly, statsStore, buildBaseFilter())
@@ -80,6 +83,20 @@ var serveCmd = &cobra.Command{
 				logger.Error("server error", slog.String("error", err.Error()))
 			}
 		}()
+
+		if cfg.FastHealthCheck {
+			logger.Info("running fast health check for startup")
+			go func() {
+				server, err := statsCollector.CheckHealthOne(ctx)
+				if err != nil {
+					logger.Warn("fast health check failed", slog.String("error", err.Error()))
+				} else {
+					logger.Info("fast health check found online server", slog.String("hostname", server.Hostname))
+				}
+			}()
+		}
+
+		statsCollector.Start(ctx)
 
 		quit := make(chan os.Signal, 1)
 		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)

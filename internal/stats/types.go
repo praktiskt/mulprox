@@ -54,6 +54,7 @@ type Config struct {
 	HealthCheckInterval   time.Duration
 	PingTargets           []string
 	EgressIPCheckInterval time.Duration
+	FastHealthCheck       bool
 }
 
 func DefaultConfig() Config {
@@ -61,6 +62,7 @@ func DefaultConfig() Config {
 		HealthCheckInterval:   30 * time.Second,
 		PingTargets:           []string{"1.1.1.1", "8.8.8.8"},
 		EgressIPCheckInterval: 5 * time.Minute,
+		FastHealthCheck:       true,
 	}
 }
 

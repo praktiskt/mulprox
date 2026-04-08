@@ -19,7 +19,16 @@ ingress:
   #   - my-host
   #   secretName: my-tls-secret
 
-env: []
+env:
+  - name: FAST_HEALTH_CHECK
+    value: "true"
+# - name: HTTP_PROXY
+#   value: "http://proxy:8080"
+# - name: MY_SECRET
+#   valueFrom:
+#     secretKeyRef:
+#       name: my-secret
+#       key: password
 # - name: HTTP_PROXY
 #   value: "http://proxy:8080"
 # - name: MY_SECRET

@@ -409,13 +409,13 @@ func (c *Collector) Stop() {
 func (c *Collector) runHealthChecker(ctx context.Context) {
 	defer c.wg.Done()
 
+	c.checkHealth(ctx)
+
 	jitter := time.Duration(rand.Int63n(int64(c.config.HealthCheckInterval)))
 	time.Sleep(jitter)
 
 	ticker := time.NewTicker(c.config.HealthCheckInterval)
 	defer ticker.Stop()
-
-	c.checkHealth(ctx)
 
 	for {
 		select {
@@ -459,6 +459,8 @@ func (c *Collector) checkHealth(ctx context.Context) {
 		return
 	}
 
+	c.logger.Debug("starting health check", slog.Int("servers", len(servers)))
+
 	type result struct {
 		remoteID string
 		hostname string
@@ -479,23 +481,74 @@ func (c *Collector) checkHealth(ctx context.Context) {
 		}(server)
 	}
 
+	var onlineCount int
 	for i := 0; i < len(servers); i++ {
 		r := <-results
 		c.store.SetRemoteMetadata(r.remoteID, r.hostname, r.country, r.city)
 		c.store.SetRemoteHealth(r.remoteID, r.health)
+		if r.health.Online {
+			onlineCount++
+		}
 	}
+
+	c.logger.Debug("health check complete", slog.Int("online", onlineCount))
+}
+
+func (c *Collector) CheckHealthOne(ctx context.Context) (mullvad.Server, error) {
+	servers, err := c.mullvad.FetchMullvadList(ctx)
+	if err != nil {
+		c.logger.Error("failed to fetch server list for health check", slog.String("error", err.Error()))
+		return mullvad.Server{}, err
+	}
+
+	c.logger.Debug("quick health check for ready", slog.Int("servers", len(servers)))
+
+	type result struct {
+		server mullvad.Server
+		health RemoteHealth
+	}
+
+	sem := make(chan struct{}, 50)
+	results := make(chan result, len(servers))
+
+	for _, server := range servers {
+		sem <- struct{}{}
+		go func(s mullvad.Server) {
+			defer func() { <-sem }()
+			health := c.pingServer(ctx, s.SOCKS5, s.SOCKSPort)
+			results <- result{server: s, health: health}
+		}(server)
+	}
+
+	for i := 0; i < len(servers); i++ {
+		r := <-results
+		c.store.SetRemoteMetadata(r.server.Hostname, r.server.Hostname, r.server.Country, r.server.City)
+		c.store.SetRemoteHealth(r.server.Hostname, r.health)
+		if r.health.Online {
+			c.logger.Debug("found online server", slog.String("hostname", r.server.Hostname))
+			for j := 0; j < len(servers)-i-1; j++ {
+				<-results
+			}
+			return r.server, nil
+		}
+	}
+
+	return mullvad.Server{}, fmt.Errorf("no online servers found")
 }
 
 func (c *Collector) pingServer(ctx context.Context, socksHost string, socksPort int) RemoteHealth {
-	var pings []int64
+	var tcpPings []int64
 	online := false
 
-	for range c.config.PingTargets {
+	for i := 0; i < 1; i++ {
 		latency := c.measureSOCKS5Latency(socksHost, socksPort)
 		if latency > 0 {
-			pings = append(pings, latency)
-			online = true
+			tcpPings = append(tcpPings, latency)
 		}
+	}
+
+	if c.measureSOCKS5Health(ctx, socksHost, socksPort) > 0 {
+		online = true
 	}
 
 	health := RemoteHealth{
@@ -503,16 +556,15 @@ func (c *Collector) pingServer(ctx context.Context, socksHost string, socksPort 
 		LastCheck: time.Now(),
 	}
 
-	if len(pings) > 0 {
+	if len(tcpPings) > 0 {
 		var sum int64
-		for _, p := range pings {
+		for _, p := range tcpPings {
 			sum += p
 		}
-		health.PingMean = float64(sum) / float64(len(pings))
-
-		if len(pings) >= 2 {
-			health.Ping1ms = pings[0]
-			health.Ping8ms = pings[1]
+		health.PingMean = float64(sum) / float64(len(tcpPings))
+		health.Ping1ms = tcpPings[0]
+		if len(tcpPings) >= 2 {
+			health.Ping8ms = tcpPings[1]
 		}
 	}
 
@@ -523,11 +575,50 @@ func (c *Collector) measureSOCKS5Latency(socksHost string, socksPort int) int64 
 	addr := net.JoinHostPort(socksHost, fmt.Sprintf("%d", socksPort))
 
 	start := time.Now()
-	conn, err := net.DialTimeout("tcp", addr, 5*time.Second)
+	conn, err := net.DialTimeout("tcp", addr, 1*time.Second)
 	if err != nil {
 		return 0
 	}
 	defer conn.Close()
+
+	return time.Since(start).Milliseconds()
+}
+
+func (c *Collector) measureSOCKS5Health(ctx context.Context, socksHost string, socksPort int) int64 {
+	socksAddr := fmt.Sprintf("%s:%d", socksHost, socksPort)
+
+	dialer, err := c.mullvad.SOCKS5DialerFromAddr(socksAddr, 5*time.Second)
+	if err != nil {
+		return 0
+	}
+
+	transport := &http.Transport{
+		Proxy: http.ProxyURL(nil),
+		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+			return dialer.Dial(network, addr)
+		},
+	}
+
+	client := &http.Client{
+		Transport: transport,
+		Timeout:   5 * time.Second,
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://am.i.mullvad.net/json", nil)
+	if err != nil {
+		return 0
+	}
+
+	start := time.Now()
+	resp, err := client.Do(req)
+	if err != nil {
+		return 0
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return 0
+	}
 
 	return time.Since(start).Milliseconds()
 }

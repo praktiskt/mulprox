@@ -32,7 +32,7 @@ func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
 		"total_remotes":  agg.TotalRemotes,
 	}
 
-	if agg.ActiveRemotes >= 1 {
+	if agg.OnlineRemotes >= 1 {
 		resp["status"] = "ok"
 		w.WriteHeader(http.StatusOK)
 	} else {
