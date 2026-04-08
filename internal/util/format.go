@@ -27,3 +27,23 @@ func FormatBytesUint(n uint64) string {
 	}
 	return fmt.Sprintf("%.1f %cB", float64(n)/float64(div), "KMGTPE"[exp])
 }
+
+func FormatLatency(ms float64) string {
+	if ms < 1 {
+		return "—"
+	}
+	return fmt.Sprintf("%.0fms", ms)
+}
+
+func LatencyClass(ms float64) string {
+	if ms < 0 {
+		return ""
+	}
+	if ms < 100 {
+		return "latency-good"
+	}
+	if ms < 300 {
+		return "latency-ok"
+	}
+	return "latency-bad"
+}

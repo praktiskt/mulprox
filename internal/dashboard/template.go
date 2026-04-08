@@ -2,7 +2,6 @@ package dashboard
 
 import (
 	"embed"
-	"fmt"
 	"html/template"
 	"time"
 
@@ -19,9 +18,9 @@ var ProxiesTableTemplate *template.Template
 func init() {
 	funcs := template.FuncMap{
 		"formatBytes":   util.FormatBytesUint,
-		"formatLatency": formatLatency,
+		"formatLatency": util.FormatLatency,
 		"formatTime":    formatTime,
-		"latencyClass":  latencyClass,
+		"latencyClass":  util.LatencyClass,
 		"sortIcon":      sortIcon,
 	}
 
@@ -36,26 +35,6 @@ func init() {
 
 	DashboardTemplate = template.Must(template.New("dashboard").Funcs(funcs).Parse(string(dashboardContent)))
 	ProxiesTableTemplate = template.Must(template.New("proxies").Funcs(funcs).Parse(string(proxiesContent)))
-}
-
-func formatLatency(ms float64) string {
-	if ms < 1 {
-		return "—"
-	}
-	return fmt.Sprintf("%.0fms", ms)
-}
-
-func latencyClass(ms float64) string {
-	if ms < 0 {
-		return ""
-	}
-	if ms < 100 {
-		return "latency-good"
-	}
-	if ms < 300 {
-		return "latency-ok"
-	}
-	return "latency-bad"
 }
 
 func formatTime(t time.Time) string {
