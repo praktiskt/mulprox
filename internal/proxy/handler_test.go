@@ -302,7 +302,7 @@ func TestProxyAuthApply(t *testing.T) {
 	}
 
 	filter := mullvad.Filter{}
-	auth.Apply(&filter)
+	auth.ApplyTo(&filter)
 
 	if filter.Seed != 123 {
 		t.Errorf("expected seed 123, got %d", filter.Seed)

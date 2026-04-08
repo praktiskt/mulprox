@@ -72,13 +72,13 @@ func (p *Provider) SOCKS5DialerFromAddr(socksAddr string, timeout time.Duration)
 }
 
 type Filter struct {
-	Countries []string
-	Cities    []string
-	Owned     *bool
-	Providers []string
-	MinSpeed  int
-	Multihop  bool
-	Seed      int64
+	Countries []string `json:"country,omitempty"`
+	Cities    []string `json:"city,omitempty"`
+	Seed      int64    `json:"seed,omitempty"`
+	Owned     *bool    `json:"owned,omitempty"`
+	Providers []string `json:"provider,omitempty"`
+	MinSpeed  int      `json:"speed,omitempty"`
+	Multihop  bool     `json:"multihop,omitempty"`
 }
 
 type ServerProvider interface {

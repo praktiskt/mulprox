@@ -35,7 +35,7 @@ type ProxyAuth struct {
 	Multihop  bool     `json:"multihop,omitempty"`
 }
 
-func (p *ProxyAuth) Apply(filter *mullvad.Filter) {
+func (p *ProxyAuth) ApplyTo(filter *mullvad.Filter) {
 	if len(p.Countries) > 0 {
 		filter.Countries = append(filter.Countries, p.Countries...)
 	}
@@ -430,7 +430,7 @@ func (h *Handler) resolveSOCKS5(ctx context.Context, r *http.Request) (addr, rem
 		if err != nil {
 			return "", "", fmt.Errorf("invalid Proxy-Authorization: %w", err)
 		}
-		auth.Apply(&filter)
+		auth.ApplyTo(&filter)
 	}
 
 	isOnline := func(hostname string) bool {
