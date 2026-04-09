@@ -68,7 +68,7 @@ func DefaultConfig() Config {
 		HealthCheckInterval:      5 * time.Minute,
 		HealthCheckTimeout:       30 * time.Second,
 		HealthCheckHTTPTimeout:   10 * time.Second,
-		PingCount:                1,
+		PingCount:                2,
 		EgressIPCheckInterval:    15 * time.Minute,
 		EgressIPCheckTimeout:     2 * time.Minute,
 		EgressIPCheckHTTPTimeout: 10 * time.Second,
