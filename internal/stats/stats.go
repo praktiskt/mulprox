@@ -472,21 +472,23 @@ func (c *Collector) checkHealth(ctx context.Context) {
 		health   RemoteHealth
 	}
 
-	sem := make(chan struct{}, 20)
+	var wg sync.WaitGroup
 	results := make(chan result, len(servers))
 
 	for _, server := range servers {
-		sem <- struct{}{}
+		wg.Add(1)
 		go func(s mullvad.Server) {
-			defer func() { <-sem }()
+			defer wg.Done()
 			health := c.pingServer(ctx, s.SOCKS5, s.SOCKSPort)
 			results <- result{remoteID: s.Hostname, hostname: s.Hostname, country: s.Country, city: s.City, health: health}
 		}(server)
 	}
 
+	wg.Wait()
+	close(results)
+
 	var onlineCount int
-	for i := 0; i < len(servers); i++ {
-		r := <-results
+	for r := range results {
 		c.store.SetRemoteMetadata(r.remoteID, r.hostname, r.country, r.city)
 		c.store.SetRemoteHealth(r.remoteID, r.health)
 		if r.health.Online {
@@ -511,27 +513,26 @@ func (c *Collector) CheckHealthOne(ctx context.Context) (mullvad.Server, error) 
 		health RemoteHealth
 	}
 
-	sem := make(chan struct{}, 50)
+	var wg sync.WaitGroup
 	results := make(chan result, len(servers))
 
 	for _, server := range servers {
-		sem <- struct{}{}
+		wg.Add(1)
 		go func(s mullvad.Server) {
-			defer func() { <-sem }()
+			defer wg.Done()
 			health := c.pingServer(ctx, s.SOCKS5, s.SOCKSPort)
 			results <- result{server: s, health: health}
 		}(server)
 	}
 
-	for i := 0; i < len(servers); i++ {
-		r := <-results
+	wg.Wait()
+	close(results)
+
+	for r := range results {
 		c.store.SetRemoteMetadata(r.server.Hostname, r.server.Hostname, r.server.Country, r.server.City)
 		c.store.SetRemoteHealth(r.server.Hostname, r.health)
 		if r.health.Online {
 			c.logger.Debug("found online server", slog.String("hostname", r.server.Hostname))
-			for j := 0; j < len(servers)-i-1; j++ {
-				<-results
-			}
 			return r.server, nil
 		}
 	}
@@ -638,16 +639,11 @@ func (c *Collector) checkEgressIPs(ctx context.Context) {
 	}
 
 	var wg sync.WaitGroup
-	sem := make(chan struct{}, 20)
 
 	for _, server := range servers {
-		sem <- struct{}{}
 		wg.Add(1)
 		go func(s mullvad.Server) {
-			defer func() {
-				wg.Done()
-				<-sem
-			}()
+			defer wg.Done()
 			c.checkEgressIPForServer(ctx, s.SOCKS5, s.SOCKSPort, s.Hostname, s.Hostname, s.Country, s.City)
 		}(server)
 	}
