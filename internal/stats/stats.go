@@ -472,23 +472,21 @@ func (c *Collector) checkHealth(ctx context.Context) {
 		health   RemoteHealth
 	}
 
-	var wg sync.WaitGroup
+	sem := make(chan struct{}, 20)
 	results := make(chan result, len(servers))
 
 	for _, server := range servers {
-		wg.Add(1)
+		sem <- struct{}{}
 		go func(s mullvad.Server) {
-			defer wg.Done()
+			defer func() { <-sem }()
 			health := c.pingServer(ctx, s.SOCKS5, s.SOCKSPort)
 			results <- result{remoteID: s.Hostname, hostname: s.Hostname, country: s.Country, city: s.City, health: health}
 		}(server)
 	}
 
-	wg.Wait()
-	close(results)
-
 	var onlineCount int
-	for r := range results {
+	for i := 0; i < len(servers); i++ {
+		r := <-results
 		c.store.SetRemoteMetadata(r.remoteID, r.hostname, r.country, r.city)
 		c.store.SetRemoteHealth(r.remoteID, r.health)
 		if r.health.Online {
@@ -513,22 +511,20 @@ func (c *Collector) CheckHealthOne(ctx context.Context) (mullvad.Server, error) 
 		health RemoteHealth
 	}
 
-	var wg sync.WaitGroup
+	sem := make(chan struct{}, 50)
 	results := make(chan result, len(servers))
 
 	for _, server := range servers {
-		wg.Add(1)
+		sem <- struct{}{}
 		go func(s mullvad.Server) {
-			defer wg.Done()
+			defer func() { <-sem }()
 			health := c.pingServer(ctx, s.SOCKS5, s.SOCKSPort)
 			results <- result{server: s, health: health}
 		}(server)
 	}
 
-	wg.Wait()
-	close(results)
-
-	for r := range results {
+	for i := 0; i < len(servers); i++ {
+		r := <-results
 		c.store.SetRemoteMetadata(r.server.Hostname, r.server.Hostname, r.server.Country, r.server.City)
 		c.store.SetRemoteHealth(r.server.Hostname, r.health)
 		if r.health.Online {
@@ -638,17 +634,19 @@ func (c *Collector) checkEgressIPs(ctx context.Context) {
 		return
 	}
 
-	var wg sync.WaitGroup
+	sem := make(chan struct{}, 20)
 
 	for _, server := range servers {
-		wg.Add(1)
+		sem <- struct{}{}
 		go func(s mullvad.Server) {
-			defer wg.Done()
+			defer func() { <-sem }()
 			c.checkEgressIPForServer(ctx, s.SOCKS5, s.SOCKSPort, s.Hostname, s.Hostname, s.Country, s.City)
 		}(server)
 	}
 
-	wg.Wait()
+	for i := 0; i < len(servers); i++ {
+		<-sem
+	}
 }
 
 func (c *Collector) checkEgressIPForServer(ctx context.Context, socksHost string, socksPort int, remoteID, hostname, country, city string) {

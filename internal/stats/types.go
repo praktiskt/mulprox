@@ -65,11 +65,11 @@ type Config struct {
 
 func DefaultConfig() Config {
 	return Config{
-		HealthCheckInterval:      5 * time.Minute,
+		HealthCheckInterval:      30 * time.Second,
 		HealthCheckTimeout:       30 * time.Second,
 		HealthCheckHTTPTimeout:   10 * time.Second,
 		PingCount:                2,
-		EgressIPCheckInterval:    15 * time.Minute,
+		EgressIPCheckInterval:    5 * time.Minute,
 		EgressIPCheckTimeout:     2 * time.Minute,
 		EgressIPCheckHTTPTimeout: 10 * time.Second,
 		SOCKSDialTimeout:         5 * time.Second,
