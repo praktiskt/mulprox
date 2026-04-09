@@ -568,6 +568,8 @@ func (c *Collector) pingServer(ctx context.Context, socksHost string, socksPort 
 		if len(tcpPings) >= 2 {
 			health.Ping8ms = tcpPings[1]
 		}
+	} else if healthLatency > 0 {
+		health.PingMean = float64(healthLatency)
 	}
 
 	return health
