@@ -312,6 +312,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to connect to target", slog.String("error", err.Error()))
 		if h.stats != nil && remoteID != "" {
 			h.stats.RecordError(remoteID)
+			h.stats.SetRemoteHealth(remoteID, stats.RemoteHealth{Online: false})
 		}
 		http.Error(w, "failed to connect to target", http.StatusBadGateway)
 		return
