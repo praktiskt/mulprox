@@ -94,8 +94,10 @@ func sortRemotes(remotes []*stats.RemoteStats, field, dir string) []*stats.Remot
 		case "latency":
 			pingI := sorted[i].Health.PingMean
 			pingJ := sorted[j].Health.PingMean
-			hasPingI := pingI > 0
-			hasPingJ := pingJ > 0
+			onlineI := sorted[i].Health.Online
+			onlineJ := sorted[j].Health.Online
+			hasPingI := onlineI && pingI > 0
+			hasPingJ := onlineJ && pingJ > 0
 			if hasPingI != hasPingJ {
 				return hasPingI
 			}
