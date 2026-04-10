@@ -25,6 +25,14 @@ const (
 	copyBufSize = 32 * 1024
 )
 
+type roundTripResult struct {
+	resp       *http.Response
+	remoteID   string
+	sent       int64
+	err        error
+	proxyError bool
+}
+
 type ProxyAuth struct {
 	Countries []string `json:"country,omitempty"`
 	Cities    []string `json:"city,omitempty"`
@@ -146,24 +154,24 @@ func (h *Handler) proxyHTTP(ctx context.Context, w http.ResponseWriter, r *http.
 		return
 	}
 
-	var lastErr error
+	var lastResult *roundTripResult
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		resp, remoteID, sent, err := h.roundTrip(ctx, r, targetURL, body)
-		if err != nil {
+		result := h.roundTrip(ctx, r, targetURL, body)
+		if result.err != nil {
 			if ctx.Err() != nil {
 				return // context canceled or timed out; client already gone
 			}
-			if !isRetryable(err) {
-				h.logAndRespond(w, remoteID, err)
+			if !isRetryable(result.err) {
+				h.logAndRespond(w, result.remoteID, result.err, result.proxyError)
 				return
 			}
-			lastErr = err
+			lastResult = result
 			continue
 		}
 
-		defer resp.Body.Close()
-		h.writeResponse(w, resp, remoteID, sent)
+		defer result.resp.Body.Close()
+		h.writeResponse(w, result.resp, result.remoteID, result.sent)
 		return
 	}
 
@@ -171,22 +179,22 @@ func (h *Handler) proxyHTTP(ctx context.Context, w http.ResponseWriter, r *http.
 		return
 	}
 	h.logger.Error("proxy request exhausted retries",
-		slog.String("error", lastErr.Error()),
+		slog.String("error", lastResult.err.Error()),
 		slog.Int("attempts", maxRetries))
-	http.Error(w, "failed to reach target", http.StatusBadGateway)
+	h.logAndRespond(w, lastResult.remoteID, lastResult.err, lastResult.proxyError)
 }
 
 // roundTrip performs a single proxy attempt: resolves a SOCKS5 server, builds
 // a transport, and executes the request.
-func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL string, body []byte) (*http.Response, string, int64, error) {
+func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL string, body []byte) *roundTripResult {
 	socksAddr, remoteID, err := h.resolveSOCKS5(ctx, r)
 	if err != nil {
-		return nil, "", 0, err
+		return &roundTripResult{err: err, proxyError: true}
 	}
 
 	socksDialer, err := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
 	if err != nil {
-		return nil, remoteID, 0, err
+		return &roundTripResult{remoteID: remoteID, err: err, proxyError: true}
 	}
 
 	tr := h.getTransport(socksAddr, socksDialer)
@@ -198,7 +206,7 @@ func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL stri
 
 	req, err := http.NewRequestWithContext(ctx, r.Method, targetURL, reqBody)
 	if err != nil {
-		return nil, remoteID, 0, err
+		return &roundTripResult{remoteID: remoteID, err: err, proxyError: true}
 	}
 	for key, values := range r.Header {
 		req.Header[key] = values
@@ -208,9 +216,9 @@ func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL stri
 
 	resp, err := tr.RoundTrip(req)
 	if err != nil {
-		return nil, remoteID, 0, err
+		return &roundTripResult{remoteID: remoteID, err: err, proxyError: true}
 	}
-	return resp, remoteID, sent, nil
+	return &roundTripResult{resp: resp, remoteID: remoteID, sent: sent, proxyError: false}
 }
 
 // httpRequestSize returns the approximate number of bytes the HTTP request
@@ -312,7 +320,6 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		h.logger.Error("failed to connect to target", slog.String("error", err.Error()))
 		if h.stats != nil && remoteID != "" {
 			h.stats.RecordError(remoteID)
-			h.stats.SetRemoteHealth(remoteID, stats.RemoteHealth{Online: false})
 		}
 		http.Error(w, "failed to connect to target", http.StatusBadGateway)
 		return
@@ -516,10 +523,14 @@ func (h *Handler) readBody(r *http.Request) ([]byte, error) {
 }
 
 // logAndRespond logs a proxy error, records stats, and writes a 502 response.
-func (h *Handler) logAndRespond(w http.ResponseWriter, remoteID string, err error) {
+// If markUnhealthy is true, the proxy is also marked as offline.
+func (h *Handler) logAndRespond(w http.ResponseWriter, remoteID string, err error, markUnhealthy bool) {
 	h.logger.Error("proxy request failed", slog.String("error", err.Error()))
 	if h.stats != nil && remoteID != "" {
 		h.stats.RecordError(remoteID)
+		if markUnhealthy {
+			h.stats.SetRemoteHealth(remoteID, stats.RemoteHealth{Online: false})
+		}
 	}
 	http.Error(w, "failed to reach target", http.StatusBadGateway)
 }
