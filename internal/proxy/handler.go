@@ -17,12 +17,14 @@ import (
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
 	"github.com/praktiskt/mulprox/internal/stats"
+	"github.com/praktiskt/mulprox/internal/util"
 	"golang.org/x/net/proxy"
 )
 
 const (
-	maxRetries  = 3
-	copyBufSize = 32 * 1024
+	maxRetries            = 3
+	copyBufSize           = 32 * 1024
+	maxTransportCacheSize = 50
 )
 
 type roundTripResult struct {
@@ -80,17 +82,18 @@ type Handler struct {
 	httpsOnly      bool
 	stats          stats.Store
 	baseFilter     mullvad.Filter
-	transportCache sync.Map
+	transportCache *util.LRUCache[*http.Transport]
 }
 
 func New(logger *slog.Logger, timeout time.Duration, mullvad mullvad.ServerProvider, httpsOnly bool, statsStore stats.Store, baseFilter mullvad.Filter) *Handler {
 	return &Handler{
-		logger:     logger,
-		timeout:    timeout,
-		mullvad:    mullvad,
-		httpsOnly:  httpsOnly,
-		stats:      statsStore,
-		baseFilter: baseFilter,
+		logger:         logger,
+		timeout:        timeout,
+		mullvad:        mullvad,
+		httpsOnly:      httpsOnly,
+		stats:          statsStore,
+		baseFilter:     baseFilter,
+		transportCache: util.NewLRUCache[*http.Transport](maxTransportCacheSize),
 	}
 }
 
@@ -495,8 +498,8 @@ func parseProxyAuthHeader(header string) (*ProxyAuth, error) {
 
 // getTransport returns a cached http.Transport for the given SOCKS5 address.
 func (h *Handler) getTransport(socksAddr string, dialer proxy.Dialer) *http.Transport {
-	if tr, ok := h.transportCache.Load(socksAddr); ok {
-		return tr.(*http.Transport)
+	if tr, ok := h.transportCache.Get(socksAddr); ok {
+		return tr
 	}
 
 	tr := &http.Transport{
@@ -510,7 +513,7 @@ func (h *Handler) getTransport(socksAddr string, dialer proxy.Dialer) *http.Tran
 		IdleConnTimeout:     30 * time.Second,
 	}
 
-	h.transportCache.Store(socksAddr, tr)
+	h.transportCache.Set(socksAddr, tr)
 	return tr
 }
 
