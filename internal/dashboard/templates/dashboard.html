@@ -371,6 +371,13 @@
 			});
 		}
 
+		function formatRateValue(val) {
+			if (val === 0) return 0;
+			if (val < 1) return val.toFixed(2);
+			if (val < 10) return val.toFixed(1);
+			return Math.round(val);
+		}
+
 		function formatRate(bytes) {
 			if (bytes < 1024) return bytes + ' B/s';
 			if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(0) + ' KB/s';
@@ -393,7 +400,7 @@
 
 				if (el) {
 					if (cfg.isRate && key !== 'sent' && key !== 'recv') {
-						el.textContent = Math.round(val) + '/s';
+						el.textContent = formatRateValue(val) + '/s';
 					} else if (key === 'sent' || key === 'recv') {
 						el.textContent = formatRate(val);
 					} else {

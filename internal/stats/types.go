@@ -43,12 +43,12 @@ type AggregatedStats struct {
 }
 
 type WindowStat struct {
-	Requests      uint64 `json:"requests"`
-	BytesSent     uint64 `json:"bytes_sent"`
-	BytesRecv     uint64 `json:"bytes_recv"`
-	Errors        uint64 `json:"errors"`
-	ActiveRemotes int    `json:"active_remotes"`
-	TotalRemotes  int    `json:"total_remotes"`
+	Requests      float64 `json:"requests"`
+	BytesSent     float64 `json:"bytes_sent"`
+	BytesRecv     float64 `json:"bytes_recv"`
+	Errors        float64 `json:"errors"`
+	ActiveRemotes int     `json:"active_remotes"`
+	TotalRemotes  int     `json:"total_remotes"`
 }
 
 type Config struct {

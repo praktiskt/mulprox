@@ -19,6 +19,7 @@ import (
 const (
 	DefaultFlushInterval = 50 * time.Millisecond
 	WindowSize           = 120
+	SMAPeriod            = 5
 )
 
 type Store interface {
@@ -63,6 +64,13 @@ type InMemoryStore struct {
 	prevTotalBytesSent uint64
 	prevTotalBytesRecv uint64
 	prevTotalErrors    uint64
+
+	smaBuffer     [SMAPeriod]float64
+	smaBufferSent [SMAPeriod]float64
+	smaBufferRecv [SMAPeriod]float64
+	smaBufferErrs [SMAPeriod]float64
+	smaIdx        int
+	smaCount      int
 }
 
 func NewInMemoryStore(logger *slog.Logger) *InMemoryStore {
@@ -140,16 +148,35 @@ func (s *InMemoryStore) runWindowTicker() {
 func (s *InMemoryStore) updateWindow() {
 	agg := s.RemoteStore.GetAggregated()
 
-	requests := agg.TotalRequests - s.prevTotalRequests
-	bytesSent := agg.TotalBytesSent - s.prevTotalBytesSent
-	bytesRecv := agg.TotalBytesRecv - s.prevTotalBytesRecv
-	errors := agg.TotalErrors - s.prevTotalErrors
+	requests := float64(agg.TotalRequests - s.prevTotalRequests)
+	bytesSent := float64(agg.TotalBytesSent - s.prevTotalBytesSent)
+	bytesRecv := float64(agg.TotalBytesRecv - s.prevTotalBytesRecv)
+	errors := float64(agg.TotalErrors - s.prevTotalErrors)
+
+	s.smaBuffer[s.smaIdx] = requests
+	s.smaBufferSent[s.smaIdx] = bytesSent
+	s.smaBufferRecv[s.smaIdx] = bytesRecv
+	s.smaBufferErrs[s.smaIdx] = errors
+
+	if s.smaCount < SMAPeriod {
+		s.smaCount++
+	}
+
+	s.smaIdx = (s.smaIdx + 1) % SMAPeriod
+
+	var sumRequests, sumBytesSent, sumBytesRecv, sumErrors float64
+	for i := 0; i < s.smaCount; i++ {
+		sumRequests += s.smaBuffer[i]
+		sumBytesSent += s.smaBufferSent[i]
+		sumBytesRecv += s.smaBufferRecv[i]
+		sumErrors += s.smaBufferErrs[i]
+	}
 
 	s.window[s.windowIdx] = WindowStat{
-		Requests:      requests,
-		BytesSent:     bytesSent,
-		BytesRecv:     bytesRecv,
-		Errors:        errors,
+		Requests:      sumRequests / float64(s.smaCount),
+		BytesSent:     sumBytesSent / float64(s.smaCount),
+		BytesRecv:     sumBytesRecv / float64(s.smaCount),
+		Errors:        sumErrors / float64(s.smaCount),
 		ActiveRemotes: agg.ActiveRemotes,
 		TotalRemotes:  agg.TotalRemotes,
 	}
