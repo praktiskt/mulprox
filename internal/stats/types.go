@@ -7,12 +7,13 @@ import (
 )
 
 type RemoteHealth struct {
-	Ping1ms       int64     `json:"ping_1ms"`
-	Ping8ms       int64     `json:"ping_8ms"`
-	PingMean      float64   `json:"ping_mean"`
-	HealthLatency int64     `json:"health_latency_ms"`
-	Online        bool      `json:"online"`
-	LastCheck     time.Time `json:"last_check"`
+	Ping1ms             int64     `json:\"ping_1ms\"`
+	Ping8ms             int64     `json:\"ping_8ms\"`
+	PingMean            float64   `json:\"ping_mean\"`
+	HealthLatency       int64     `json:\"health_latency_ms\"`
+	Online              bool      `json:\"online\"`
+	LastCheck           time.Time `json:\"last_check\"`
+	ConsecutiveFailures int       `json:\"consecutive_failures\"`
 }
 
 type RemoteStats struct {
@@ -52,28 +53,30 @@ type WindowStat struct {
 }
 
 type Config struct {
-	HealthCheckInterval      time.Duration
-	HealthCheckTimeout       time.Duration
-	HealthCheckHTTPTimeout   time.Duration
-	PingCount                int
-	EgressIPCheckInterval    time.Duration
-	EgressIPCheckTimeout     time.Duration
-	EgressIPCheckHTTPTimeout time.Duration
-	SOCKSDialTimeout         time.Duration
-	FastHealthCheck          bool
+	HealthCheckInterval            time.Duration
+	HealthCheckTimeout             time.Duration
+	HealthCheckHTTPTimeout         time.Duration
+	PingCount                      int
+	HealthCheckConsecutiveFailures int
+	EgressIPCheckInterval          time.Duration
+	EgressIPCheckTimeout           time.Duration
+	EgressIPCheckHTTPTimeout       time.Duration
+	SOCKSDialTimeout               time.Duration
+	FastHealthCheck                bool
 }
 
 func DefaultConfig() Config {
 	return Config{
-		HealthCheckInterval:      30 * time.Second,
-		HealthCheckTimeout:       30 * time.Second,
-		HealthCheckHTTPTimeout:   10 * time.Second,
-		PingCount:                2,
-		EgressIPCheckInterval:    5 * time.Minute,
-		EgressIPCheckTimeout:     2 * time.Minute,
-		EgressIPCheckHTTPTimeout: 10 * time.Second,
-		SOCKSDialTimeout:         5 * time.Second,
-		FastHealthCheck:          false,
+		HealthCheckInterval:            30 * time.Second,
+		HealthCheckTimeout:             30 * time.Second,
+		HealthCheckHTTPTimeout:         10 * time.Second,
+		PingCount:                      2,
+		HealthCheckConsecutiveFailures: 2,
+		EgressIPCheckInterval:          5 * time.Minute,
+		EgressIPCheckTimeout:           2 * time.Minute,
+		EgressIPCheckHTTPTimeout:       10 * time.Second,
+		SOCKSDialTimeout:               5 * time.Second,
+		FastHealthCheck:                false,
 	}
 }
 

@@ -506,7 +506,8 @@ func (c *Collector) checkHealth(ctx context.Context) {
 		sem <- struct{}{}
 		go func(s mullvad.Server) {
 			defer func() { <-sem }()
-			health := c.pingServer(ctx, s.SOCKS5, s.SOCKSPort)
+			currentStats := c.store.GetRemoteStats(s.Hostname)
+			health := c.pingServer(ctx, s.SOCKS5, s.SOCKSPort, currentStats.Health.ConsecutiveFailures)
 			results <- result{remoteID: s.Hostname, hostname: s.Hostname, country: s.Country, city: s.City, health: health}
 		}(server)
 	}
@@ -545,7 +546,8 @@ func (c *Collector) CheckHealthOne(ctx context.Context) (mullvad.Server, error) 
 		sem <- struct{}{}
 		go func(s mullvad.Server) {
 			defer func() { <-sem }()
-			health := c.pingServer(ctx, s.SOCKS5, s.SOCKSPort)
+			currentStats := c.store.GetRemoteStats(s.Hostname)
+			health := c.pingServer(ctx, s.SOCKS5, s.SOCKSPort, currentStats.Health.ConsecutiveFailures)
 			results <- result{server: s, health: health}
 		}(server)
 	}
@@ -563,9 +565,8 @@ func (c *Collector) CheckHealthOne(ctx context.Context) (mullvad.Server, error) 
 	return mullvad.Server{}, fmt.Errorf("no online servers found")
 }
 
-func (c *Collector) pingServer(ctx context.Context, socksHost string, socksPort int) RemoteHealth {
+func (c *Collector) pingServer(ctx context.Context, socksHost string, socksPort int, currentConsecutiveFailures int) RemoteHealth {
 	var tcpPings []int64
-	online := false
 
 	for i := 0; i < c.config.PingCount; i++ {
 		latency := c.measureSOCKS5Latency(socksHost, socksPort)
@@ -575,14 +576,23 @@ func (c *Collector) pingServer(ctx context.Context, socksHost string, socksPort 
 	}
 
 	healthLatency := c.measureSOCKS5Health(ctx, socksHost, socksPort)
-	if healthLatency > 0 {
-		online = true
+
+	isSuccess := healthLatency > 0
+
+	consecutiveFailures := currentConsecutiveFailures
+	if isSuccess {
+		consecutiveFailures = 0
+	} else {
+		consecutiveFailures++
 	}
 
+	online := consecutiveFailures < c.config.HealthCheckConsecutiveFailures
+
 	health := RemoteHealth{
-		Online:        online,
-		HealthLatency: healthLatency,
-		LastCheck:     time.Now(),
+		Online:              online,
+		HealthLatency:       healthLatency,
+		LastCheck:           time.Now(),
+		ConsecutiveFailures: consecutiveFailures,
 	}
 
 	if len(tcpPings) > 0 {
