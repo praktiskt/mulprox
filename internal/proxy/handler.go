@@ -506,11 +506,12 @@ func (h *Handler) getTransport(socksAddr string, dialer proxy.Dialer) *http.Tran
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return dialer.Dial(network, addr)
 		},
-		TLSHandshakeTimeout: h.timeout,
-		DisableKeepAlives:   false,
-		MaxIdleConnsPerHost: 100,
-		MaxIdleConns:        100,
-		IdleConnTimeout:     30 * time.Second,
+		TLSHandshakeTimeout:   h.timeout,
+		ResponseHeaderTimeout: h.timeout,
+		DisableKeepAlives:     false,
+		MaxIdleConnsPerHost:   100,
+		MaxIdleConns:          100,
+		IdleConnTimeout:       30 * time.Second,
 	}
 
 	h.transportCache.Set(socksAddr, tr)

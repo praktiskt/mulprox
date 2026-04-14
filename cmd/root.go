@@ -31,7 +31,7 @@ func Execute() error {
 }
 
 func init() {
-	rootCmd.PersistentFlags().DurationVar(&timeout, "timeout", 30*time.Second, "Request timeout")
+	rootCmd.PersistentFlags().DurationVar(&timeout, "timeout", 5*time.Second, "Request timeout")
 	rootCmd.PersistentFlags().BoolVar(&checkMullvad, "check-mullvad", false, "Check local Mullvad status and exit")
 	rootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug logging")
 	rootCmd.PersistentFlags().StringVar(&configFile, "config", "", "Config file path (default: mulprox.yaml in current directory)")
