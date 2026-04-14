@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
+	"github.com/praktiskt/mulprox/internal/util"
 )
 
 const (
@@ -499,18 +500,20 @@ func (c *Collector) checkHealth(ctx context.Context) {
 		health   RemoteHealth
 	}
 
-	sem := make(chan struct{}, 20)
+	swg := util.NewSizedWaitGroup(20)
 	results := make(chan result, len(servers))
 
 	for _, server := range servers {
-		sem <- struct{}{}
+		swg.Add()
 		go func(s mullvad.Server) {
-			defer func() { <-sem }()
+			defer swg.Done()
 			currentStats := c.store.GetRemoteStats(s.Hostname)
 			health := c.pingServer(ctx, s.SOCKS5, s.SOCKSPort, currentStats.Health.ConsecutiveFailures)
 			results <- result{remoteID: s.Hostname, hostname: s.Hostname, country: s.Country, city: s.City, health: health}
 		}(server)
 	}
+
+	swg.Wait()
 
 	var onlineCount int
 	for i := 0; i < len(servers); i++ {
@@ -539,13 +542,13 @@ func (c *Collector) CheckHealthOne(ctx context.Context) (mullvad.Server, error) 
 		health RemoteHealth
 	}
 
-	sem := make(chan struct{}, 50)
+	swg := util.NewSizedWaitGroup(50)
 	results := make(chan result, len(servers))
 
 	for _, server := range servers {
-		sem <- struct{}{}
+		swg.Add()
 		go func(s mullvad.Server) {
-			defer func() { <-sem }()
+			defer swg.Done()
 			currentStats := c.store.GetRemoteStats(s.Hostname)
 			health := c.pingServer(ctx, s.SOCKS5, s.SOCKSPort, currentStats.Health.ConsecutiveFailures)
 			results <- result{server: s, health: health}
@@ -673,19 +676,17 @@ func (c *Collector) checkEgressIPs(ctx context.Context) {
 		return
 	}
 
-	sem := make(chan struct{}, 20)
+	swg := util.NewSizedWaitGroup(20)
 
 	for _, server := range servers {
-		sem <- struct{}{}
+		swg.Add()
 		go func(s mullvad.Server) {
-			defer func() { <-sem }()
+			defer swg.Done()
 			c.checkEgressIPForServer(ctx, s.SOCKS5, s.SOCKSPort, s.Hostname, s.Hostname, s.Country, s.City)
 		}(server)
 	}
 
-	for i := 0; i < len(servers); i++ {
-		<-sem
-	}
+	swg.Wait()
 }
 
 func (c *Collector) checkEgressIPForServer(ctx context.Context, socksHost string, socksPort int, remoteID, hostname, country, city string) {
