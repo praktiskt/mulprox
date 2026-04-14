@@ -547,7 +547,15 @@ func (h *Handler) logAndRespond(w http.ResponseWriter, remoteID string, err erro
 	if h.stats != nil && remoteID != "" {
 		h.stats.RecordError(remoteID)
 		if markUnhealthy {
-			h.stats.SetRemoteHealth(remoteID, stats.RemoteHealth{Online: false})
+			current := h.stats.GetRemoteStats(remoteID)
+			newFailures := current.Health.ConsecutiveFailures + 1
+			health := stats.RemoteHealth{
+				Online:               false,
+				ConsecutiveFailures:  newFailures,
+				ConsecutiveSuccesses: 0,
+				LastCheck:            time.Now(),
+			}
+			h.stats.SetRemoteHealth(remoteID, health)
 		}
 	}
 	http.Error(w, "failed to reach target", http.StatusBadGateway)

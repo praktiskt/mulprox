@@ -481,9 +481,6 @@ func (c *Collector) runEgressIPChecker(ctx context.Context) {
 }
 
 func (c *Collector) checkHealth(ctx context.Context) {
-	ctx, cancel := context.WithTimeout(ctx, c.config.HealthCheckTimeout)
-	defer cancel()
-
 	servers, err := c.mullvad.FetchMullvadList(ctx)
 	if err != nil {
 		c.logger.Error("failed to fetch server list for health check", slog.String("error", err.Error()))
@@ -507,8 +504,10 @@ func (c *Collector) checkHealth(ctx context.Context) {
 		swg.Add()
 		go func(s mullvad.Server) {
 			defer swg.Done()
+			serverCtx, cancel := context.WithTimeout(context.Background(), c.config.HealthCheckHTTPTimeout)
+			defer cancel()
 			currentStats := c.store.GetRemoteStats(s.Hostname)
-			health := c.pingServer(ctx, s.SOCKS5, s.SOCKSPort, currentStats.Health.ConsecutiveFailures)
+			health := c.pingServer(serverCtx, s.SOCKS5, s.SOCKSPort, currentStats.Health.ConsecutiveFailures, currentStats.Health.ConsecutiveSuccesses)
 			results <- result{remoteID: s.Hostname, hostname: s.Hostname, country: s.Country, city: s.City, health: health}
 		}(server)
 	}
@@ -549,8 +548,10 @@ func (c *Collector) CheckHealthOne(ctx context.Context) (mullvad.Server, error) 
 		swg.Add()
 		go func(s mullvad.Server) {
 			defer swg.Done()
+			serverCtx, cancel := context.WithTimeout(context.Background(), c.config.HealthCheckHTTPTimeout)
+			defer cancel()
 			currentStats := c.store.GetRemoteStats(s.Hostname)
-			health := c.pingServer(ctx, s.SOCKS5, s.SOCKSPort, currentStats.Health.ConsecutiveFailures)
+			health := c.pingServer(serverCtx, s.SOCKS5, s.SOCKSPort, currentStats.Health.ConsecutiveFailures, currentStats.Health.ConsecutiveSuccesses)
 			results <- result{server: s, health: health}
 		}(server)
 	}
@@ -568,7 +569,7 @@ func (c *Collector) CheckHealthOne(ctx context.Context) (mullvad.Server, error) 
 	return mullvad.Server{}, fmt.Errorf("no online servers found")
 }
 
-func (c *Collector) pingServer(ctx context.Context, socksHost string, socksPort int, currentConsecutiveFailures int) RemoteHealth {
+func (c *Collector) pingServer(ctx context.Context, socksHost string, socksPort int, currentConsecutiveFailures int, currentConsecutiveSuccesses int) RemoteHealth {
 	var tcpPings []int64
 
 	for i := 0; i < c.config.PingCount; i++ {
@@ -583,19 +584,23 @@ func (c *Collector) pingServer(ctx context.Context, socksHost string, socksPort 
 	isSuccess := healthLatency > 0
 
 	consecutiveFailures := currentConsecutiveFailures
+	consecutiveSuccesses := currentConsecutiveSuccesses
 	if isSuccess {
 		consecutiveFailures = 0
+		consecutiveSuccesses++
 	} else {
 		consecutiveFailures++
+		consecutiveSuccesses = 0
 	}
 
-	online := consecutiveFailures < c.config.HealthCheckConsecutiveFailures
+	online := consecutiveFailures < c.config.HealthCheckConsecutiveFailures && (consecutiveSuccesses >= c.config.HealthCheckHealthyThreshold || (currentConsecutiveFailures == 0 && currentConsecutiveSuccesses == 0))
 
 	health := RemoteHealth{
-		Online:              online,
-		HealthLatency:       healthLatency,
-		LastCheck:           time.Now(),
-		ConsecutiveFailures: consecutiveFailures,
+		Online:               online,
+		HealthLatency:        healthLatency,
+		LastCheck:            time.Now(),
+		ConsecutiveFailures:  consecutiveFailures,
+		ConsecutiveSuccesses: consecutiveSuccesses,
 	}
 
 	if len(tcpPings) > 0 {
@@ -645,6 +650,7 @@ func (c *Collector) measureSOCKS5Health(ctx context.Context, socksHost string, s
 
 	client := &http.Client{
 		Transport: transport,
+		Timeout:   c.config.HealthCheckHTTPTimeout,
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://am.i.mullvad.net/json", nil)
