@@ -143,14 +143,12 @@ func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	h.logger.Debug("proxying request", slog.String("url", targetURL), slog.String("method", r.Method))
 
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-	defer cancel()
-
-	h.proxyHTTP(ctx, w, r, targetURL)
+	h.proxyHTTP(r.Context(), w, r, targetURL, h.timeout)
 }
 
 // proxyHTTP performs the HTTP proxy request with retries on transient errors.
-func (h *Handler) proxyHTTP(ctx context.Context, w http.ResponseWriter, r *http.Request, targetURL string) {
+// Each retry attempt gets its own fresh context with the full timeout budget.
+func (h *Handler) proxyHTTP(parentCtx context.Context, w http.ResponseWriter, r *http.Request, targetURL string, timeout time.Duration) {
 	body, err := h.readBody(r)
 	if err != nil {
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
@@ -160,13 +158,13 @@ func (h *Handler) proxyHTTP(ctx context.Context, w http.ResponseWriter, r *http.
 	var lastResult *roundTripResult
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
+		ctx, cancel := context.WithTimeout(parentCtx, timeout)
 		result := h.roundTrip(ctx, r, targetURL, body)
+		cancel() // Release context resources immediately
+
 		if result.err != nil {
-			if ctx.Err() != nil {
-				return // context canceled or timed out; client already gone
-			}
 			if !isRetryable(result.err) {
-				h.logAndRespond(w, result.remoteID, result.err, result.proxyError)
+				h.logAndRespond(w, result.remoteID, result.err, false)
 				return
 			}
 			lastResult = result
@@ -178,13 +176,10 @@ func (h *Handler) proxyHTTP(ctx context.Context, w http.ResponseWriter, r *http.
 		return
 	}
 
-	if ctx.Err() != nil {
-		return
-	}
 	h.logger.Error("proxy request exhausted retries",
 		slog.String("error", lastResult.err.Error()),
 		slog.Int("attempts", maxRetries))
-	h.logAndRespond(w, lastResult.remoteID, lastResult.err, lastResult.proxyError)
+	h.logAndRespond(w, lastResult.remoteID, lastResult.err, false)
 }
 
 // roundTrip performs a single proxy attempt: resolves a SOCKS5 server, builds
@@ -286,10 +281,8 @@ func (h *Handler) writeResponse(w http.ResponseWriter, resp *http.Response, remo
 
 // handleConnect handles CONNECT requests by tunneling bytes between client
 // and the upstream SOCKS5 target.
+// It retries on transient errors with a fresh Mullvad server each attempt.
 func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
-	ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
-	defer cancel()
-
 	host := r.Host
 	if host == "" {
 		host = r.URL.Host
@@ -301,54 +294,74 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	socksAddr, remoteID, err := h.resolveSOCKS5(ctx, r)
-	if err != nil {
-		h.logger.Error("failed to get Mullvad server", slog.String("error", err.Error()))
-		http.Error(w, "failed to create proxy session", http.StatusServiceUnavailable)
-		return
-	}
+	var lastErr error
+	var lastRemoteID string
 
-	dialer, err := h.mullvad.SOCKS5DialerFromAddr(socksAddr, h.timeout)
-	if err != nil {
-		h.logger.Error("failed to create Mullvad session", slog.String("error", err.Error()))
-		if h.stats != nil && remoteID != "" {
-			h.stats.RecordError(remoteID)
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
+		socksAddr, remoteID, err := h.resolveSOCKS5(ctx, r)
+		if err != nil {
+			cancel()
+			h.logger.Debug("failed to get Mullvad server, retrying", slog.String("error", err.Error()))
+			lastErr = err
+			lastRemoteID = remoteID
+			continue
 		}
-		http.Error(w, "failed to create proxy session", http.StatusServiceUnavailable)
-		return
-	}
 
-	targetConn, err := dialer.Dial("tcp", host)
-	if err != nil {
-		h.logger.Error("failed to connect to target", slog.String("error", err.Error()))
-		if h.stats != nil && remoteID != "" {
-			h.stats.RecordError(remoteID)
+		dialer, err := h.mullvad.SOCKS5DialerFromAddr(socksAddr, h.timeout)
+		if err != nil {
+			cancel()
+			h.logger.Debug("failed to create Mullvad session, retrying", slog.String("error", err.Error()))
+			lastErr = err
+			lastRemoteID = remoteID
+			continue
 		}
-		http.Error(w, "failed to connect to target", http.StatusBadGateway)
+
+		targetConn, err := dialer.Dial("tcp", host)
+		if err != nil {
+			cancel()
+			h.logger.Debug("failed to connect to target, retrying", slog.String("error", err.Error()))
+			lastErr = err
+			lastRemoteID = remoteID
+			continue
+		}
+
+		w.Header().Set("Connection", "Keep-Alive")
+		w.WriteHeader(http.StatusOK)
+
+		if h.stats != nil && remoteID != "" {
+			h.stats.RecordRequest(remoteID)
+		}
+
+		hij, ok := w.(http.Hijacker)
+		if !ok {
+			cancel()
+			targetConn.Close()
+			http.Error(w, "hijack not supported", http.StatusInternalServerError)
+			return
+		}
+
+		clientConn, _, err := hij.Hijack()
+		cancel() // Release context after hijack
+		if err != nil {
+			targetConn.Close()
+			h.logger.Debug("failed to hijack connection, retrying", slog.String("error", err.Error()))
+			lastErr = err
+			lastRemoteID = remoteID
+			continue
+		}
+
+		h.tunnel(clientConn, targetConn, remoteID)
 		return
 	}
-	defer targetConn.Close()
 
-	w.Header().Set("Connection", "Keep-Alive")
-	w.WriteHeader(http.StatusOK)
-
-	if h.stats != nil && remoteID != "" {
-		h.stats.RecordRequest(remoteID)
+	h.logger.Error("CONNECT request exhausted retries",
+		slog.String("error", lastErr.Error()),
+		slog.Int("attempts", maxRetries))
+	if h.stats != nil && lastRemoteID != "" {
+		h.stats.RecordError(lastRemoteID)
 	}
-
-	hij, ok := w.(http.Hijacker)
-	if !ok {
-		http.Error(w, "hijack not supported", http.StatusInternalServerError)
-		return
-	}
-
-	clientConn, _, err := hij.Hijack()
-	if err != nil {
-		h.logger.Error("failed to hijack connection", slog.String("error", err.Error()))
-		return
-	}
-
-	h.tunnel(clientConn, targetConn, remoteID)
+	http.Error(w, "failed to reach target", http.StatusBadGateway)
 }
 
 type countingReader struct {
@@ -506,12 +519,13 @@ func (h *Handler) getTransport(socksAddr string, dialer proxy.Dialer) *http.Tran
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return dialer.Dial(network, addr)
 		},
-		TLSHandshakeTimeout:   h.timeout,
-		ResponseHeaderTimeout: h.timeout,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ResponseHeaderTimeout: 5 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
 		DisableKeepAlives:     false,
 		MaxIdleConnsPerHost:   100,
 		MaxIdleConns:          100,
-		IdleConnTimeout:       30 * time.Second,
+		IdleConnTimeout:       90 * time.Second,
 	}
 
 	h.transportCache.Set(socksAddr, tr)
@@ -552,6 +566,9 @@ func isRetryable(err error) bool {
 	if errors.Is(err, syscall.ECONNRESET) ||
 		errors.Is(err, syscall.ECONNABORTED) ||
 		errors.Is(err, syscall.EPIPE) {
+		return true
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return true
 	}
 	return false
