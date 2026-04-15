@@ -593,7 +593,8 @@ func (c *Collector) pingServer(ctx context.Context, socksHost string, socksPort 
 		consecutiveSuccesses = 0
 	}
 
-	online := consecutiveFailures < c.config.HealthCheckConsecutiveFailures && (consecutiveSuccesses >= c.config.HealthCheckHealthyThreshold || (currentConsecutiveFailures == 0 && currentConsecutiveSuccesses == 0))
+	online := consecutiveFailures < c.config.HealthCheckConsecutiveFailures &&
+		(consecutiveSuccesses >= c.config.HealthCheckHealthyThreshold || currentConsecutiveFailures == 0)
 
 	health := RemoteHealth{
 		Online:               online,
