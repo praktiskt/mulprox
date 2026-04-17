@@ -201,9 +201,6 @@ type timeoutDialer struct {
 }
 
 func (d *timeoutDialer) Dial(network, address string) (net.Conn, error) {
-	timeoutCtx, cancel := context.WithTimeout(context.Background(), d.timeout)
-	defer cancel()
-
 	type result struct {
 		conn net.Conn
 		err  error
@@ -218,8 +215,14 @@ func (d *timeoutDialer) Dial(network, address string) (net.Conn, error) {
 	select {
 	case r := <-ch:
 		return r.conn, r.err
-	case <-timeoutCtx.Done():
-		return nil, timeoutCtx.Err()
+	case <-time.After(d.timeout):
+		go func() {
+			r := <-ch
+			if r.conn != nil {
+				r.conn.Close()
+			}
+		}()
+		return nil, context.DeadlineExceeded
 	}
 }
 

@@ -711,8 +711,12 @@ func (c *Collector) checkEgressIPForServer(ctx context.Context, socksHost string
 	type dialerConn interface {
 		Dial(network, addr string) (net.Conn, error)
 	}
+	dc, ok := dialer.(dialerConn)
+	if !ok {
+		return
+	}
 	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		return dialer.(dialerConn).Dial(network, addr)
+		return dc.Dial(network, addr)
 	}
 
 	client := &http.Client{

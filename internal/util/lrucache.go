@@ -2,6 +2,7 @@ package util
 
 import (
 	"container/list"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -13,10 +14,11 @@ type CacheEntry[V any] struct {
 }
 
 type LRUCache[V any] struct {
-	mu         sync.RWMutex
-	entries    map[string]*list.Element
-	list       *list.List
-	maxEntries int
+	mu            sync.RWMutex
+	entries       map[string]*list.Element
+	list          *list.List
+	maxEntries    int
+	onEvict       func(V)
 }
 
 func NewLRUCache[V any](maxEntries int) *LRUCache[V] {
@@ -28,6 +30,12 @@ func NewLRUCache[V any](maxEntries int) *LRUCache[V] {
 		list:       list.New(),
 		maxEntries: maxEntries,
 	}
+}
+
+func NewLRUCacheWithEvict[V any](maxEntries int, onEvict func(V)) *LRUCache[V] {
+	c := NewLRUCache[V](maxEntries)
+	c.onEvict = onEvict
+	return c
 }
 
 func (c *LRUCache[V]) Get(key string) (V, bool) {
@@ -67,6 +75,9 @@ func (c *LRUCache[V]) Set(key string, value V) {
 			oldest := oldestElem.Value.(*CacheEntry[V])
 			delete(c.entries, oldest.Key)
 			c.list.Remove(oldestElem)
+			if c.onEvict != nil {
+				c.onEvict(oldest.Value)
+			}
 		}
 	}
 }
@@ -93,4 +104,10 @@ func (c *LRUCache[V]) Clear() {
 
 	c.entries = make(map[string]*list.Element)
 	c.list.Init()
+}
+
+func CloseHTTPTransport(tr *http.Transport) {
+	if tr != nil {
+		tr.CloseIdleConnections()
+	}
 }

@@ -87,13 +87,17 @@ type Handler struct {
 
 func New(logger *slog.Logger, timeout time.Duration, mullvad mullvad.ServerProvider, httpsOnly bool, statsStore stats.Store, baseFilter mullvad.Filter) *Handler {
 	return &Handler{
-		logger:         logger,
-		timeout:        timeout,
-		mullvad:        mullvad,
-		httpsOnly:      httpsOnly,
-		stats:          statsStore,
-		baseFilter:     baseFilter,
-		transportCache: util.NewLRUCache[*http.Transport](maxTransportCacheSize),
+		logger:     logger,
+		timeout:    timeout,
+		mullvad:    mullvad,
+		httpsOnly:  httpsOnly,
+		stats:      statsStore,
+		baseFilter: baseFilter,
+		transportCache: util.NewLRUCacheWithEvict[*http.Transport](maxTransportCacheSize, func(tr *http.Transport) {
+			if tr != nil {
+				tr.CloseIdleConnections()
+			}
+		}),
 	}
 }
 
@@ -163,6 +167,9 @@ func (h *Handler) proxyHTTP(parentCtx context.Context, w http.ResponseWriter, r 
 		cancel() // Release context resources immediately
 
 		if result.err != nil {
+			if result.resp != nil && result.resp.Body != nil {
+				result.resp.Body.Close()
+			}
 			if !isRetryable(result.err) {
 				h.logAndRespond(w, result.remoteID, result.err, false)
 				return
