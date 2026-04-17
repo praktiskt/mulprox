@@ -28,11 +28,10 @@ const (
 )
 
 type roundTripResult struct {
-	resp       *http.Response
-	remoteID   string
-	sent       int64
-	err        error
-	proxyError bool
+	resp     *http.Response
+	remoteID string
+	sent     int64
+	err      error
 }
 
 type ProxyAuth struct {
@@ -194,12 +193,12 @@ func (h *Handler) proxyHTTP(parentCtx context.Context, w http.ResponseWriter, r 
 func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL string, body []byte) *roundTripResult {
 	socksAddr, remoteID, err := h.resolveSOCKS5(ctx, r)
 	if err != nil {
-		return &roundTripResult{err: err, proxyError: true}
+		return &roundTripResult{err: err}
 	}
 
 	socksDialer, err := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
 	if err != nil {
-		return &roundTripResult{remoteID: remoteID, err: err, proxyError: true}
+		return &roundTripResult{remoteID: remoteID, err: err}
 	}
 
 	tr := h.getTransport(socksAddr, socksDialer)
@@ -211,7 +210,7 @@ func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL stri
 
 	req, err := http.NewRequestWithContext(ctx, r.Method, targetURL, reqBody)
 	if err != nil {
-		return &roundTripResult{remoteID: remoteID, err: err, proxyError: true}
+		return &roundTripResult{remoteID: remoteID, err: err}
 	}
 	for key, values := range r.Header {
 		req.Header[key] = values
@@ -221,9 +220,9 @@ func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL stri
 
 	resp, err := tr.RoundTrip(req)
 	if err != nil {
-		return &roundTripResult{remoteID: remoteID, err: err, proxyError: true}
+		return &roundTripResult{remoteID: remoteID, err: err}
 	}
-	return &roundTripResult{resp: resp, remoteID: remoteID, sent: sent, proxyError: false}
+	return &roundTripResult{resp: resp, remoteID: remoteID, sent: sent}
 }
 
 // httpRequestSize returns the approximate number of bytes the HTTP request
@@ -246,7 +245,6 @@ func httpRequestSize(req *http.Request, bodyLen int) int64 {
 
 type countingWriter struct {
 	http.ResponseWriter
-	n        int64
 	remoteID string
 	stats    stats.Store
 	lastSent int64

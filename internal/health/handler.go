@@ -15,13 +15,13 @@ func New(store stats.Store) *Handler {
 	return &Handler{store: store}
 }
 
-func (h *Handler) Livez(w http.ResponseWriter, r *http.Request) {
+func (*Handler) Livez(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
 }
 
-func (h *Handler) Readyz(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) Readyz(w http.ResponseWriter, _ *http.Request) {
 	agg := h.store.GetAggregatedStats()
 
 	w.Header().Set("Content-Type", "application/json")

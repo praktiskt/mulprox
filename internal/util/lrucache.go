@@ -2,7 +2,6 @@ package util
 
 import (
 	"container/list"
-	"net/http"
 	"sync"
 	"time"
 )
@@ -14,11 +13,11 @@ type CacheEntry[V any] struct {
 }
 
 type LRUCache[V any] struct {
-	mu            sync.RWMutex
-	entries       map[string]*list.Element
-	list          *list.List
-	maxEntries    int
-	onEvict       func(V)
+	mu         sync.RWMutex
+	entries    map[string]*list.Element
+	list       *list.List
+	maxEntries int
+	onEvict    func(V)
 }
 
 func NewLRUCache[V any](maxEntries int) *LRUCache[V] {
@@ -104,10 +103,4 @@ func (c *LRUCache[V]) Clear() {
 
 	c.entries = make(map[string]*list.Element)
 	c.list.Init()
-}
-
-func CloseHTTPTransport(tr *http.Transport) {
-	if tr != nil {
-		tr.CloseIdleConnections()
-	}
 }

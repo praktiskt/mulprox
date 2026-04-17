@@ -141,7 +141,7 @@ func sortRemotes(remotes []*stats.RemoteStats, field, dir string) []*stats.Remot
 	return sorted
 }
 
-func (h *Handler) serveDashboard(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) serveDashboard(w http.ResponseWriter, _ *http.Request) {
 	data := Data{
 		Aggregated: h.store.GetAggregatedStats(),
 	}
@@ -150,7 +150,7 @@ func (h *Handler) serveDashboard(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-func (h *Handler) serveStats(w http.ResponseWriter, r *http.Request) {
+func (h *Handler) serveStats(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	agg := h.store.GetAggregatedStats()
 	if err := json.NewEncoder(w).Encode(agg); err != nil {
