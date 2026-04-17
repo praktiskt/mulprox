@@ -403,32 +403,34 @@ func (h *Handler) tunnel(clientConn, targetConn net.Conn, remoteID string) {
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		deltaSent := sent - lastSent
-		deltaRecv := received - lastRecv
-		if deltaSent > 0 || deltaRecv > 0 {
-			if h.stats != nil && remoteID != "" {
-				h.stats.RecordBytes(remoteID, deltaSent, deltaRecv)
-			}
-			lastSent = sent
-			lastRecv = received
-		}
+	done := make(chan struct{})
+	go func() {
+		wg.Wait()
+		close(done)
+	}()
 
-		if sent > 0 && received > 0 {
-			done := make(chan struct{})
-			go func() {
-				wg.Wait()
-				close(done)
-			}()
-			select {
-			case <-done:
-				ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			deltaSent := sent - lastSent
+			deltaRecv := received - lastRecv
+			if deltaSent > 0 || deltaRecv > 0 {
 				if h.stats != nil && remoteID != "" {
-					h.stats.RecordRequest(remoteID)
+					h.stats.RecordBytes(remoteID, deltaSent, deltaRecv)
 				}
-				return
-			default:
+				lastSent = sent
+				lastRecv = received
 			}
+		case <-done:
+			ticker.Stop()
+			deltaSent := sent - lastSent
+			deltaRecv := received - lastRecv
+			if deltaSent > 0 || deltaRecv > 0 {
+				if h.stats != nil && remoteID != "" {
+					h.stats.RecordBytes(remoteID, deltaSent, deltaRecv)
+				}
+			}
+			return
 		}
 	}
 }

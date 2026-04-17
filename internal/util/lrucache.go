@@ -31,8 +31,8 @@ func NewLRUCache[V any](maxEntries int) *LRUCache[V] {
 }
 
 func (c *LRUCache[V]) Get(key string) (V, bool) {
-	c.mu.RLock()
-	defer c.mu.RUnlock()
+	c.mu.Lock()
+	defer c.mu.Unlock()
 
 	if elem, ok := c.entries[key]; ok {
 		c.list.MoveToFront(elem)
