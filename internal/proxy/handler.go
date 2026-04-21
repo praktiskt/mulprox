@@ -27,6 +27,8 @@ const (
 	maxTransportCacheSize = 50
 )
 
+var indexResponse = []byte("Mullvad Proxy Server\nUsage: Set HTTP_PROXY environment variable to point to this server")
+
 type roundTripResult struct {
 	resp     *http.Response
 	remoteID string
@@ -132,7 +134,7 @@ func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if targetURL == "/" && r.Method == http.MethodGet {
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write([]byte("Mullvad Proxy Server\nUsage: Set HTTP_PROXY environment variable to point to this server"))
+		w.Write(indexResponse)
 		return
 	}
 
@@ -146,12 +148,13 @@ func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	h.logger.Debug("proxying request", slog.String("url", targetURL), slog.String("method", r.Method))
 
-	h.proxyHTTP(r.Context(), w, r, targetURL, h.timeout)
+	h.proxyHTTP(r.Context(), w, r, targetURL)
 }
 
 // proxyHTTP performs the HTTP proxy request with retries on transient errors.
-// Each retry attempt gets its own fresh context with the full timeout budget.
-func (h *Handler) proxyHTTP(parentCtx context.Context, w http.ResponseWriter, r *http.Request, targetURL string, timeout time.Duration) {
+// The upstream connection + header phase is bounded by Transport-level timeouts;
+// body streaming uses parentCtx (cancels only on client disconnect).
+func (h *Handler) proxyHTTP(parentCtx context.Context, w http.ResponseWriter, r *http.Request, targetURL string) {
 	body, err := h.readBody(r)
 	if err != nil {
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
@@ -161,9 +164,7 @@ func (h *Handler) proxyHTTP(parentCtx context.Context, w http.ResponseWriter, r 
 	var lastResult *roundTripResult
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		ctx, cancel := context.WithTimeout(parentCtx, timeout)
-		result := h.roundTrip(ctx, r, targetURL, body)
-		cancel() // Release context resources immediately
+		result := h.roundTrip(parentCtx, r, targetURL, body)
 
 		if result.err != nil {
 			if result.resp != nil && result.resp.Body != nil {
@@ -196,12 +197,14 @@ func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL stri
 		return &roundTripResult{err: err}
 	}
 
-	socksDialer, err := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
-	if err != nil {
-		return &roundTripResult{remoteID: remoteID, err: err}
+	tr := h.getTransport(socksAddr)
+	if tr == nil {
+		socksDialer, err := proxy.SOCKS5("tcp", socksAddr, nil, &net.Dialer{Timeout: h.timeout})
+		if err != nil {
+			return &roundTripResult{remoteID: remoteID, err: err}
+		}
+		tr = h.createAndCacheTransport(socksAddr, socksDialer)
 	}
-
-	tr := h.getTransport(socksAddr, socksDialer)
 
 	var reqBody io.Reader
 	if body != nil {
@@ -281,7 +284,9 @@ func (h *Handler) writeResponse(w http.ResponseWriter, resp *http.Response, remo
 		h.stats.RecordRequest(remoteID)
 	}
 
-	_, _ = io.Copy(cw, resp.Body)
+	buf := bufferPool.Get().([]byte)
+	defer bufferPool.Put(buf)
+	_, _ = io.CopyBuffer(cw, resp.Body, buf)
 }
 
 // handleConnect handles CONNECT requests by tunneling bytes between client
@@ -517,11 +522,15 @@ func parseProxyAuthHeader(header string) (*ProxyAuth, error) {
 }
 
 // getTransport returns a cached http.Transport for the given SOCKS5 address.
-func (h *Handler) getTransport(socksAddr string, dialer proxy.Dialer) *http.Transport {
+func (h *Handler) getTransport(socksAddr string) *http.Transport {
 	if tr, ok := h.transportCache.Get(socksAddr); ok {
 		return tr
 	}
+	return nil
+}
 
+// createAndCacheTransport builds and caches a new http.Transport for the SOCKS5 address.
+func (h *Handler) createAndCacheTransport(socksAddr string, dialer proxy.Dialer) *http.Transport {
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return dialer.Dial(network, addr)

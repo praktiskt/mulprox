@@ -9,8 +9,8 @@ type SizedWaitGroup struct {
 	wg  sync.WaitGroup
 }
 
-func NewSizedWaitGroup(size int) SizedWaitGroup {
-	return SizedWaitGroup{
+func NewSizedWaitGroup(size int) *SizedWaitGroup {
+	return &SizedWaitGroup{
 		sem: make(chan struct{}, size),
 	}
 }

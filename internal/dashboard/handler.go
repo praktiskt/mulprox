@@ -72,73 +72,70 @@ func (h *Handler) serveProxies(w http.ResponseWriter, r *http.Request) {
 }
 
 func sortRemotes(remotes []*stats.RemoteStats, field, dir string) []*stats.RemoteStats {
-	sorted := make([]*stats.RemoteStats, len(remotes))
-	copy(sorted, remotes)
-
 	less := func(i, j int) bool {
 		var cmp int
 		switch field {
 		case "hostname":
-			cmp = strings.Compare(sorted[i].Hostname, sorted[j].Hostname)
+			cmp = strings.Compare(remotes[i].Hostname, remotes[j].Hostname)
 		case "country":
-			cmp = strings.Compare(sorted[i].Country, sorted[j].Country)
+			cmp = strings.Compare(remotes[i].Country, remotes[j].Country)
 		case "city":
-			cmp = strings.Compare(sorted[i].City, sorted[j].City)
+			cmp = strings.Compare(remotes[i].City, remotes[j].City)
 		case "egress_ip":
-			cmp = strings.Compare(sorted[i].EgressIP, sorted[j].EgressIP)
+			cmp = strings.Compare(remotes[i].EgressIP, remotes[j].EgressIP)
 		case "status":
-			if sorted[i].Health.Online != sorted[j].Health.Online {
-				return sorted[i].Health.Online && !sorted[j].Health.Online
+			if remotes[i].Health.Online != remotes[j].Health.Online {
+				return remotes[i].Health.Online && !remotes[j].Health.Online
 			}
 			cmp = 0
 		case "latency":
-			pingI := sorted[i].Health.PingMean
-			pingJ := sorted[j].Health.PingMean
-			onlineI := sorted[i].Health.Online
-			onlineJ := sorted[j].Health.Online
-			hasPingI := onlineI && pingI > 0
-			hasPingJ := onlineJ && pingJ > 0
+			ingI := remotes[i].Health.PingMean
+			ingJ := remotes[j].Health.PingMean
+			onlineI := remotes[i].Health.Online
+			onlineJ := remotes[j].Health.Online
+			hasPingI := onlineI && ingI > 0
+			hasPingJ := onlineJ && ingJ > 0
 			if hasPingI != hasPingJ {
 				return hasPingI
 			}
-			if hasPingI && pingI != pingJ {
-				return pingI < pingJ
+			if hasPingI && ingI != ingJ {
+				return ingI < ingJ
 			}
 			cmp = 0
 		case "requests":
-			if sorted[i].RequestCount.Load() != sorted[j].RequestCount.Load() {
-				return sorted[i].RequestCount.Load() < sorted[j].RequestCount.Load()
+			if remotes[i].RequestCount.Load() != remotes[j].RequestCount.Load() {
+				return remotes[i].RequestCount.Load() < remotes[j].RequestCount.Load()
 			}
 			cmp = 0
 		case "errors":
-			if sorted[i].ErrorCount.Load() != sorted[j].ErrorCount.Load() {
-				return sorted[i].ErrorCount.Load() < sorted[j].ErrorCount.Load()
+			if remotes[i].ErrorCount.Load() != remotes[j].ErrorCount.Load() {
+				return remotes[i].ErrorCount.Load() < remotes[j].ErrorCount.Load()
 			}
 			cmp = 0
 		case "last_used":
-			if !sorted[i].LastUsed.Equal(sorted[j].LastUsed) {
-				return sorted[i].LastUsed.Before(sorted[j].LastUsed)
+			if !remotes[i].LastUsed.Equal(remotes[j].LastUsed) {
+				return remotes[i].LastUsed.Before(remotes[j].LastUsed)
 			}
 			cmp = 0
 		default:
-			if sorted[i].RequestCount.Load() != sorted[j].RequestCount.Load() {
-				return sorted[i].RequestCount.Load() < sorted[j].RequestCount.Load()
+			if remotes[i].RequestCount.Load() != remotes[j].RequestCount.Load() {
+				return remotes[i].RequestCount.Load() < remotes[j].RequestCount.Load()
 			}
 			cmp = 0
 		}
 		if cmp == 0 {
-			cmp = strings.Compare(sorted[i].Hostname, sorted[j].Hostname)
+			cmp = strings.Compare(remotes[i].Hostname, remotes[j].Hostname)
 		}
 		return cmp < 0
 	}
 
 	if dir == "asc" {
-		sort.Slice(sorted, func(i, j int) bool { return less(i, j) })
+		sort.Slice(remotes, func(i, j int) bool { return less(i, j) })
 	} else {
-		sort.Slice(sorted, func(i, j int) bool { return less(j, i) })
+		sort.Slice(remotes, func(i, j int) bool { return less(j, i) })
 	}
 
-	return sorted
+	return remotes
 }
 
 func (h *Handler) serveDashboard(w http.ResponseWriter, _ *http.Request) {

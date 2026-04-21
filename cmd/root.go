@@ -60,8 +60,7 @@ func init() {
 			level = slog.LevelDebug
 		}
 		logger = slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{
-			Level:     level,
-			AddSource: true,
+			Level: level,
 		}))
 
 		viper.AutomaticEnv()

@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
@@ -18,7 +17,7 @@ import (
 )
 
 const (
-	DefaultFlushInterval = 50 * time.Millisecond
+	DefaultFlushInterval = 200 * time.Millisecond
 	WindowSize           = 120
 	SMAPeriod            = 5
 )
@@ -36,10 +35,10 @@ type Store interface {
 }
 
 type pendingUpdate struct {
-	requestCount atomic.Uint64
-	bytesSent    atomic.Uint64
-	bytesRecv    atomic.Uint64
-	errorCount   atomic.Uint64
+	requestCount uint64
+	bytesSent    uint64
+	bytesRecv    uint64
+	errorCount   uint64
 	egressIP     string
 	hostname     string
 	country      string
@@ -50,11 +49,20 @@ type pendingUpdate struct {
 	hasHealth    bool
 }
 
+type statUpdate struct {
+	typ                     byte
+	id                      string
+	sent, recv              uint64
+	ip                      string
+	hostname, country, city string
+	health                  RemoteHealth
+}
+
 type InMemoryStore struct {
 	*RemoteStore
 	logger        *slog.Logger
 	flushInterval time.Duration
-	updateCh      chan interface{}
+	updateCh      chan statUpdate
 	stopCh        chan struct{}
 	wg            sync.WaitGroup
 	started       bool
@@ -79,7 +87,7 @@ func NewInMemoryStore(logger *slog.Logger) *InMemoryStore {
 		RemoteStore:   NewRemoteStore(),
 		logger:        logger,
 		flushInterval: DefaultFlushInterval,
-		updateCh:      make(chan interface{}, 10000),
+		updateCh:      make(chan statUpdate, 10000),
 		stopCh:        make(chan struct{}),
 		window:        make([]WindowStat, WindowSize),
 	}
@@ -195,61 +203,53 @@ func (s *InMemoryStore) flush() {
 
 	for {
 		select {
-		case update := <-s.updateCh:
-			switch u := update.(type) {
-			case string:
-				remoteID := u
-				p, ok := pending[remoteID]
+		case u := <-s.updateCh:
+			switch u.typ {
+			case 0: // request
+				p, ok := pending[u.id]
 				if !ok {
 					p = &pendingUpdate{}
-					pending[remoteID] = p
+					pending[u.id] = p
 				}
-				p.requestCount.Add(1)
-			case statBytes:
-				remoteID := u.remoteID
-				p, ok := pending[remoteID]
+				p.requestCount++
+			case 1: // bytes
+				p, ok := pending[u.id]
 				if !ok {
 					p = &pendingUpdate{}
-					pending[remoteID] = p
+					pending[u.id] = p
 				}
-				p.bytesSent.Add(uint64(u.sent))
-				p.bytesRecv.Add(uint64(u.received))
-			case stringWithID:
-				if u.isError {
-					remoteID := u.remoteID
-					p, ok := pending[remoteID]
-					if !ok {
-						p = &pendingUpdate{}
-						pending[remoteID] = p
-					}
-					p.errorCount.Add(1)
-				}
-			case statEgressIP:
-				remoteID := u.remoteID
-				p, ok := pending[remoteID]
+				p.bytesSent += u.sent
+				p.bytesRecv += u.recv
+			case 2: // error
+				p, ok := pending[u.id]
 				if !ok {
 					p = &pendingUpdate{}
-					pending[remoteID] = p
+					pending[u.id] = p
+				}
+				p.errorCount++
+			case 3: // egressIP
+				p, ok := pending[u.id]
+				if !ok {
+					p = &pendingUpdate{}
+					pending[u.id] = p
 				}
 				p.egressIP = u.ip
 				p.hasEgressIP = true
-			case statMetadata:
-				remoteID := u.remoteID
-				p, ok := pending[remoteID]
+			case 4: // metadata
+				p, ok := pending[u.id]
 				if !ok {
 					p = &pendingUpdate{}
-					pending[remoteID] = p
+					pending[u.id] = p
 				}
 				p.hostname = u.hostname
 				p.country = u.country
 				p.city = u.city
 				p.hasMetadata = true
-			case statHealth:
-				remoteID := u.remoteID
-				p, ok := pending[remoteID]
+			case 5: // health
+				p, ok := pending[u.id]
 				if !ok {
 					p = &pendingUpdate{}
-					pending[remoteID] = p
+					pending[u.id] = p
 				}
 				p.health = u.health
 				p.hasHealth = true
@@ -265,10 +265,10 @@ func (s *InMemoryStore) flush() {
 
 apply:
 	for remoteID, p := range pending {
-		rc := p.requestCount.Load()
-		bs := p.bytesSent.Load()
-		br := p.bytesRecv.Load()
-		ec := p.errorCount.Load()
+		rc := p.requestCount
+		bs := p.bytesSent
+		br := p.bytesRecv
+		ec := p.errorCount
 		ip := p.egressIP
 		hn := p.hostname
 		co := p.country
@@ -308,24 +308,7 @@ apply:
 	}
 }
 
-type (
-	statBytes struct {
-		remoteID       string
-		sent, received int64
-	}
-	stringWithID struct {
-		remoteID string
-		isError  bool
-	}
-	statEgressIP struct{ remoteID, ip string }
-	statMetadata struct{ remoteID, hostname, country, city string }
-	statHealth   struct {
-		remoteID string
-		health   RemoteHealth
-	}
-)
-
-func (s *InMemoryStore) sendNonBlocking(update interface{}) {
+func (s *InMemoryStore) sendNonBlocking(update statUpdate) {
 	if !s.started {
 		return
 	}
@@ -339,30 +322,30 @@ func (s *InMemoryStore) sendNonBlocking(update interface{}) {
 }
 
 func (s *InMemoryStore) RecordRequest(remoteID string) {
-	s.sendNonBlocking(remoteID)
+	s.sendNonBlocking(statUpdate{typ: 0, id: remoteID})
 }
 
 func (s *InMemoryStore) RecordBytes(remoteID string, sent, received int64) {
 	if !s.started {
 		return
 	}
-	s.sendNonBlocking(statBytes{remoteID: remoteID, sent: sent, received: received})
+	s.sendNonBlocking(statUpdate{typ: 1, id: remoteID, sent: uint64(sent), recv: uint64(received)})
 }
 
 func (s *InMemoryStore) RecordError(remoteID string) {
-	s.sendNonBlocking(stringWithID{remoteID: remoteID, isError: true})
+	s.sendNonBlocking(statUpdate{typ: 2, id: remoteID})
 }
 
 func (s *InMemoryStore) SetRemoteEgressIP(remoteID string, ip string) {
-	s.sendNonBlocking(statEgressIP{remoteID: remoteID, ip: ip})
+	s.sendNonBlocking(statUpdate{typ: 3, id: remoteID, ip: ip})
 }
 
 func (s *InMemoryStore) SetRemoteMetadata(remoteID, hostname, country, city string) {
-	s.sendNonBlocking(statMetadata{remoteID: remoteID, hostname: hostname, country: country, city: city})
+	s.sendNonBlocking(statUpdate{typ: 4, id: remoteID, hostname: hostname, country: country, city: city})
 }
 
 func (s *InMemoryStore) SetRemoteHealth(remoteID string, health RemoteHealth) {
-	s.sendNonBlocking(statHealth{remoteID: remoteID, health: health})
+	s.sendNonBlocking(statUpdate{typ: 5, id: remoteID, health: health})
 }
 
 func (s *InMemoryStore) GetRemoteStats(remoteID string) *RemoteStats {
@@ -389,13 +372,12 @@ func (s *InMemoryStore) getWindow() []WindowStat {
 }
 
 type Collector struct {
-	logger     *slog.Logger
-	store      Store
-	mullvad    mullvad.ServerProvider
-	config     Config
-	httpClient *http.Client
-	stopCh     chan struct{}
-	wg         sync.WaitGroup
+	logger  *slog.Logger
+	store   Store
+	mullvad mullvad.ServerProvider
+	config  Config
+	stopCh  chan struct{}
+	wg      sync.WaitGroup
 }
 
 func NewCollector(logger *slog.Logger, store Store, mullvadProvider mullvad.ServerProvider, config Config) *Collector {
@@ -404,10 +386,7 @@ func NewCollector(logger *slog.Logger, store Store, mullvadProvider mullvad.Serv
 		store:   store,
 		mullvad: mullvadProvider,
 		config:  config,
-		httpClient: &http.Client{
-			Timeout: config.HealthCheckHTTPTimeout,
-		},
-		stopCh: make(chan struct{}),
+		stopCh:  make(chan struct{}),
 	}
 }
 

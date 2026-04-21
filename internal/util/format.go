@@ -8,7 +8,7 @@ func FormatBytes(n int64) string {
 		return fmt.Sprintf("%d B", n)
 	}
 	div, exp := int64(unit), 0
-	for n >= unit*unit {
+	for n >= div*unit {
 		div *= unit
 		exp++
 	}
@@ -21,7 +21,7 @@ func FormatBytesUint(n uint64) string {
 		return fmt.Sprintf("%d B", n)
 	}
 	div, exp := uint64(unit), 0
-	for n := n / unit; n >= unit; n /= unit {
+	for n >= div*unit {
 		div *= unit
 		exp++
 	}

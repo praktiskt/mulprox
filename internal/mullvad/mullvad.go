@@ -4,10 +4,11 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"math/rand"
+	"math/rand/v2"
 	"net"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -63,12 +64,8 @@ func New() *Provider {
 }
 
 func (p *Provider) SOCKS5DialerFromAddr(socksAddr string, timeout time.Duration) (proxy.Dialer, error) {
-	dialer, err := proxy.SOCKS5("tcp", socksAddr, nil, proxy.Direct)
-	if err != nil {
-		return nil, err
-	}
-
-	return &timeoutDialer{dialer, timeout}, nil
+	fwd := &net.Dialer{Timeout: timeout}
+	return proxy.SOCKS5("tcp", socksAddr, nil, fwd)
 }
 
 type Filter struct {
@@ -114,12 +111,12 @@ func (p *Provider) GetFilteredServer(ctx context.Context, filter Filter) (Server
 	}
 
 	if filter.Seed != 0 {
-		rng := rand.New(rand.NewSource(filter.Seed))
-		index := rng.Intn(len(filtered))
+		rng := rand.New(rand.NewPCG(uint64(filter.Seed), uint64(filter.Seed)))
+		index := rng.IntN(len(filtered))
 		return filtered[index], nil
 	}
 
-	server := filtered[rand.Intn(len(filtered))]
+	server := filtered[rand.IntN(len(filtered))]
 	return server, nil
 }
 
@@ -151,12 +148,12 @@ func (p *Provider) GetFilteredServerWithHealth(ctx context.Context, filter Filte
 	}
 
 	if filter.Seed != 0 {
-		rng := rand.New(rand.NewSource(filter.Seed))
-		index := rng.Intn(len(healthy))
+		rng := rand.New(rand.NewPCG(uint64(filter.Seed), uint64(filter.Seed)))
+		index := rng.IntN(len(healthy))
 		return healthy[index], nil
 	}
 
-	server := healthy[rand.Intn(len(healthy))]
+	server := healthy[rand.IntN(len(healthy))]
 	return server, nil
 }
 
@@ -170,7 +167,7 @@ func (p *Provider) GetFilteredServers(filter Filter) ([]Server, error) {
 }
 
 func (p *Provider) filterByFilter(servers []Server, filter Filter) []Server {
-	var filtered []Server
+	filtered := make([]Server, 0, len(servers))
 	for _, s := range servers {
 		if len(filter.Countries) > 0 && !stringInSlice(filter.Countries, s.Country) {
 			continue
@@ -193,37 +190,6 @@ func (p *Provider) filterByFilter(servers []Server, filter Filter) []Server {
 		filtered = append(filtered, s)
 	}
 	return filtered
-}
-
-type timeoutDialer struct {
-	dialer  proxy.Dialer
-	timeout time.Duration
-}
-
-func (d *timeoutDialer) Dial(network, address string) (net.Conn, error) {
-	type result struct {
-		conn net.Conn
-		err  error
-	}
-	ch := make(chan result, 1)
-
-	go func() {
-		conn, err := d.dialer.Dial(network, address)
-		ch <- result{conn, err}
-	}()
-
-	select {
-	case r := <-ch:
-		return r.conn, r.err
-	case <-time.After(d.timeout):
-		go func() {
-			r := <-ch
-			if r.conn != nil {
-				r.conn.Close()
-			}
-		}()
-		return nil, context.DeadlineExceeded
-	}
 }
 
 func (p *Provider) CheckMullvadStatus(ctx context.Context) (bool, error) {
@@ -333,12 +299,9 @@ func parseMullvadRelays(html string) []Server {
 			continue
 		}
 
-		speed := 0
-		fmt.Sscanf(get(m, "speed"), "%d", &speed)
-		multihop := 0
-		fmt.Sscanf(get(m, "multihop"), "%d", &multihop)
-		socksPort := 0
-		fmt.Sscanf(get(m, "socksport"), "%d", &socksPort)
+		speed, _ := strconv.Atoi(get(m, "speed"))
+		multihop, _ := strconv.Atoi(get(m, "multihop"))
+		socksPort, _ := strconv.Atoi(get(m, "socksport"))
 
 		servers = append(servers, Server{
 			Flag:      get(m, "flag"),
