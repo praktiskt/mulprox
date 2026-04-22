@@ -166,7 +166,17 @@ func (p *Provider) GetFilteredServers(filter Filter) ([]Server, error) {
 	return p.filterByFilter(mullvadServers, filter), nil
 }
 
+func (f Filter) isEmpty() bool {
+	return len(f.Countries) == 0 && len(f.Cities) == 0 && len(f.Providers) == 0 &&
+		f.Seed == 0 && f.Owned == nil && f.MinSpeed == 0 && !f.Multihop
+}
+
 func (p *Provider) filterByFilter(servers []Server, filter Filter) []Server {
+	if filter.isEmpty() {
+		out := make([]Server, len(servers))
+		copy(out, servers)
+		return out
+	}
 	filtered := make([]Server, 0, len(servers))
 	for _, s := range servers {
 		if len(filter.Countries) > 0 && !stringInSlice(filter.Countries, s.Country) {
@@ -259,6 +269,15 @@ func (p *Provider) FetchMullvadList(ctx context.Context) ([]Server, error) {
 
 var relayRe = regexp.MustCompile(`hostname:"(?P<hostname>[^"]+)",country_code:"(?P<flag>[^"]+)",country_name:"(?P<country>[^"]+)",city_code:"[^"]+",city_name:"(?P<city>[^"]+)",fqdn:"[^"]+",active:(?P<active>true|false),owned:(?P<owned>true|false),provider:"(?P<provider>[^"]+)",ipv4_addr_in:"(?P<ipv4>[^"]+)",ipv6_addr_in:"(?P<ipv6>[^"]+)",network_port_speed:(?P<speed>\d+),stboot:(?:true|false),type:"[^"]+",status_messages:\[\],pubkey:"[^"]+",multihop_port:(?P<multihop>\d+),socks_name:"(?P<socks>[^"]+)",socks_port:(?P<socksport>\d+),daita:`)
 
+var relayNameIndex = func() map[string]int {
+	names := relayRe.SubexpNames()
+	m := make(map[string]int, len(names))
+	for i, n := range names {
+		m[n] = i
+	}
+	return m
+}()
+
 func parseMullvadRelays(html string) []Server {
 	start := strings.Index(html, "relays:[")
 	if start == -1 {
@@ -282,39 +301,29 @@ func parseMullvadRelays(html string) []Server {
 	jsArray := html[start+7 : end]
 
 	matches := relayRe.FindAllStringSubmatch(jsArray, -1)
-	names := relayRe.SubexpNames()
-
-	get := func(m []string, name string) string {
-		for i, n := range names {
-			if n == name {
-				return m[i]
-			}
-		}
-		return ""
-	}
 
 	var servers []Server
 	for _, m := range matches {
-		if get(m, "active") != "true" {
+		if m[relayNameIndex["active"]] != "true" {
 			continue
 		}
 
-		speed, _ := strconv.Atoi(get(m, "speed"))
-		multihop, _ := strconv.Atoi(get(m, "multihop"))
-		socksPort, _ := strconv.Atoi(get(m, "socksport"))
+		speed, _ := strconv.Atoi(m[relayNameIndex["speed"]])
+		multihop, _ := strconv.Atoi(m[relayNameIndex["multihop"]])
+		socksPort, _ := strconv.Atoi(m[relayNameIndex["socksport"]])
 
 		servers = append(servers, Server{
-			Flag:      get(m, "flag"),
-			Country:   get(m, "country"),
-			City:      get(m, "city"),
-			SOCKS5:    get(m, "socks"),
-			IPv4:      get(m, "ipv4"),
-			IPv6:      get(m, "ipv6"),
+			Flag:      m[relayNameIndex["flag"]],
+			Country:   m[relayNameIndex["country"]],
+			City:      m[relayNameIndex["city"]],
+			SOCKS5:    m[relayNameIndex["socks"]],
+			IPv4:      m[relayNameIndex["ipv4"]],
+			IPv6:      m[relayNameIndex["ipv6"]],
 			Speed:     speed,
 			Multihop:  multihop,
-			Owned:     get(m, "owned") == "true",
-			Provider:  get(m, "provider"),
-			Hostname:  get(m, "hostname"),
+			Owned:     m[relayNameIndex["owned"]] == "true",
+			Provider:  m[relayNameIndex["provider"]],
+			Hostname:  m[relayNameIndex["hostname"]],
 			SOCKSPort: socksPort,
 		})
 	}

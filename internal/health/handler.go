@@ -7,6 +7,8 @@ import (
 	"github.com/praktiskt/mulprox/internal/stats"
 )
 
+var livezResponse = []byte("{\"status\":\"ok\"}\n")
+
 type Handler struct {
 	store stats.Store
 }
@@ -18,7 +20,14 @@ func New(store stats.Store) *Handler {
 func (*Handler) Livez(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	json.NewEncoder(w).Encode(map[string]string{"status": "ok"})
+	w.Write(livezResponse)
+}
+
+type readyzResp struct {
+	Status       string `json:"status"`
+	ActiveRemotes int   `json:"active_remotes"`
+	OnlineRemotes int   `json:"online_remotes"`
+	TotalRemotes  int   `json:"total_remotes"`
 }
 
 func (h *Handler) Readyz(w http.ResponseWriter, _ *http.Request) {
@@ -26,17 +35,17 @@ func (h *Handler) Readyz(w http.ResponseWriter, _ *http.Request) {
 
 	w.Header().Set("Content-Type", "application/json")
 
-	resp := map[string]any{
-		"active_remotes": agg.ActiveRemotes,
-		"online_remotes": agg.OnlineRemotes,
-		"total_remotes":  agg.TotalRemotes,
+	resp := readyzResp{
+		ActiveRemotes: agg.ActiveRemotes,
+		OnlineRemotes: agg.OnlineRemotes,
+		TotalRemotes:  agg.TotalRemotes,
 	}
 
 	if agg.OnlineRemotes >= 1 {
-		resp["status"] = "ok"
+		resp.Status = "ok"
 		w.WriteHeader(http.StatusOK)
 	} else {
-		resp["status"] = "not_ready"
+		resp.Status = "not_ready"
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 

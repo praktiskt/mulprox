@@ -8,12 +8,12 @@ import (
 	"math/rand"
 	"net"
 	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
-	"github.com/praktiskt/mulprox/internal/util"
 )
 
 const (
@@ -481,26 +481,35 @@ func (c *Collector) checkHealth(ctx context.Context) {
 		health   RemoteHealth
 	}
 
-	swg := util.NewSizedWaitGroup(20)
+	const workers = 20
+	jobs := make(chan mullvad.Server, len(servers))
 	results := make(chan result, len(servers))
 
-	for _, server := range servers {
-		swg.Add()
-		go func(s mullvad.Server) {
-			defer swg.Done()
-			serverCtx, cancel := context.WithTimeout(context.Background(), c.config.HealthCheckHTTPTimeout)
-			defer cancel()
-			currentStats := c.store.GetRemoteStats(s.Hostname)
-			health := c.pingServer(serverCtx, s.SOCKS5, s.SOCKSPort, currentStats.Health.ConsecutiveFailures, currentStats.Health.ConsecutiveSuccesses)
-			results <- result{remoteID: s.Hostname, hostname: s.Hostname, country: s.Country, city: s.City, health: health}
-		}(server)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for s := range jobs {
+				serverCtx, cancel := context.WithTimeout(context.Background(), c.config.HealthCheckHTTPTimeout)
+				currentStats := c.store.GetRemoteStats(s.Hostname)
+				health := c.pingServer(serverCtx, s.SOCKS5, s.SOCKSPort, currentStats.Health.ConsecutiveFailures, currentStats.Health.ConsecutiveSuccesses)
+				cancel()
+				results <- result{remoteID: s.Hostname, hostname: s.Hostname, country: s.Country, city: s.City, health: health}
+			}
+		}()
 	}
 
-	swg.Wait()
+	for _, server := range servers {
+		jobs <- server
+	}
+	close(jobs)
+
+	wg.Wait()
+	close(results)
 
 	var onlineCount int
-	for i := 0; i < len(servers); i++ {
-		r := <-results
+	for r := range results {
 		c.store.SetRemoteMetadata(r.remoteID, r.hostname, r.country, r.city)
 		c.store.SetRemoteHealth(r.remoteID, r.health)
 		if r.health.Online {
@@ -525,23 +534,34 @@ func (c *Collector) CheckHealthOne(ctx context.Context) (mullvad.Server, error) 
 		health RemoteHealth
 	}
 
-	swg := util.NewSizedWaitGroup(50)
+	const workers = 50
+	jobs := make(chan mullvad.Server, len(servers))
 	results := make(chan result, len(servers))
 
-	for _, server := range servers {
-		swg.Add()
-		go func(s mullvad.Server) {
-			defer swg.Done()
-			serverCtx, cancel := context.WithTimeout(context.Background(), c.config.HealthCheckHTTPTimeout)
-			defer cancel()
-			currentStats := c.store.GetRemoteStats(s.Hostname)
-			health := c.pingServer(serverCtx, s.SOCKS5, s.SOCKSPort, currentStats.Health.ConsecutiveFailures, currentStats.Health.ConsecutiveSuccesses)
-			results <- result{server: s, health: health}
-		}(server)
+	var wg sync.WaitGroup
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for s := range jobs {
+				serverCtx, cancel := context.WithTimeout(context.Background(), c.config.HealthCheckHTTPTimeout)
+				currentStats := c.store.GetRemoteStats(s.Hostname)
+				health := c.pingServer(serverCtx, s.SOCKS5, s.SOCKSPort, currentStats.Health.ConsecutiveFailures, currentStats.Health.ConsecutiveSuccesses)
+				cancel()
+				results <- result{server: s, health: health}
+			}
+		}()
 	}
 
-	for i := 0; i < len(servers); i++ {
-		r := <-results
+	for _, server := range servers {
+		jobs <- server
+	}
+	close(jobs)
+
+	wg.Wait()
+	close(results)
+
+	for r := range results {
 		c.store.SetRemoteMetadata(r.server.Hostname, r.server.Hostname, r.server.Country, r.server.City)
 		c.store.SetRemoteHealth(r.server.Hostname, r.health)
 		if r.health.Online {
@@ -606,7 +626,7 @@ func (c *Collector) pingServer(ctx context.Context, socksHost string, socksPort 
 }
 
 func (c *Collector) measureSOCKS5Latency(socksHost string, socksPort int) int64 {
-	addr := net.JoinHostPort(socksHost, fmt.Sprintf("%d", socksPort))
+	addr := net.JoinHostPort(socksHost, strconv.Itoa(socksPort))
 
 	start := time.Now()
 	conn, err := net.DialTimeout("tcp", addr, 1*time.Second)
@@ -619,7 +639,7 @@ func (c *Collector) measureSOCKS5Latency(socksHost string, socksPort int) int64 
 }
 
 func (c *Collector) measureSOCKS5Health(ctx context.Context, socksHost string, socksPort int) int64 {
-	socksAddr := fmt.Sprintf("%s:%d", socksHost, socksPort)
+	socksAddr := net.JoinHostPort(socksHost, strconv.Itoa(socksPort))
 
 	dialer, err := c.mullvad.SOCKS5DialerFromAddr(socksAddr, c.config.SOCKSDialTimeout)
 	if err != nil {
@@ -627,11 +647,14 @@ func (c *Collector) measureSOCKS5Health(ctx context.Context, socksHost string, s
 	}
 
 	transport := &http.Transport{
-		Proxy: http.ProxyURL(nil),
+		Proxy:               http.ProxyURL(nil),
+		DisableKeepAlives:   true,
+		TLSHandshakeTimeout: 5 * time.Second,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return dialer.Dial(network, addr)
 		},
 	}
+	defer transport.CloseIdleConnections()
 
 	client := &http.Client{
 		Transport: transport,
@@ -667,27 +690,37 @@ func (c *Collector) checkEgressIPs(ctx context.Context) {
 		return
 	}
 
-	swg := util.NewSizedWaitGroup(20)
+	const workers = 20
+	jobs := make(chan mullvad.Server, len(servers))
+	var wg sync.WaitGroup
 
-	for _, server := range servers {
-		swg.Add()
-		go func(s mullvad.Server) {
-			defer swg.Done()
-			c.checkEgressIPForServer(ctx, s.SOCKS5, s.SOCKSPort, s.Hostname, s.Hostname, s.Country, s.City)
-		}(server)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for s := range jobs {
+				c.checkEgressIPForServer(ctx, s.SOCKS5, s.SOCKSPort, s.Hostname, s.Hostname, s.Country, s.City)
+			}
+		}()
 	}
 
-	swg.Wait()
+	for _, server := range servers {
+		jobs <- server
+	}
+	close(jobs)
+	wg.Wait()
 }
 
 func (c *Collector) checkEgressIPForServer(ctx context.Context, socksHost string, socksPort int, remoteID, hostname, country, city string) {
 	c.store.SetRemoteMetadata(remoteID, hostname, country, city)
 
 	transport := &http.Transport{
-		Proxy: http.ProxyURL(nil),
+		Proxy:             http.ProxyURL(nil),
+		DisableKeepAlives: true,
 	}
+	defer transport.CloseIdleConnections()
 
-	dialer, err := c.mullvad.SOCKS5DialerFromAddr(fmt.Sprintf("%s:%d", socksHost, socksPort), 10*time.Second)
+	dialer, err := c.mullvad.SOCKS5DialerFromAddr(net.JoinHostPort(socksHost, strconv.Itoa(socksPort)), 10*time.Second)
 	if err != nil {
 		return
 	}
@@ -708,7 +741,12 @@ func (c *Collector) checkEgressIPForServer(ctx context.Context, socksHost string
 		Timeout:   c.config.EgressIPCheckHTTPTimeout,
 	}
 
-	resp, err := client.Get("https://api.ipify.org?format=text")
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.ipify.org?format=text", nil)
+	if err != nil {
+		return
+	}
+
+	resp, err := client.Do(req)
 	if err != nil {
 		return
 	}
