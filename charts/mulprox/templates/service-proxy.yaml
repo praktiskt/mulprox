@@ -11,9 +11,16 @@ spec:
   type: LoadBalancer
   loadBalancerClass: tailscale
   ports:
-    - port: 1080
+    - port: {{ .Values.service.port }}
       targetPort: {{ .Values.service.targetPort }}
       protocol: TCP
+      name: http-proxy
+    {{- if .Values.socks5.enabled }}
+    - port: {{ .Values.socks5.port }}
+      targetPort: {{ .Values.socks5.port }}
+      protocol: TCP
+      name: socks5
+    {{- end }}
   selector:
     app: {{ .Release.Name }}
 {{- end }}

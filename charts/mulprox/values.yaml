@@ -9,6 +9,14 @@ service:
   port: 8080
   targetPort: 8080
 
+socks5:
+  enabled: false
+  port: 1080
+
+upstreamSOCKS5: ""
+
+extraArgs: []
+
 ingress:
   enabled: false
   className: ""

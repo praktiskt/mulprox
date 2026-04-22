@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 
@@ -23,7 +22,6 @@ import (
 
 const (
 	maxRetries            = 3
-	copyBufSize           = 32 * 1024
 	maxTransportCacheSize = 50
 )
 
@@ -70,12 +68,6 @@ func (p *ProxyAuth) ApplyTo(filter *mullvad.Filter) {
 	}
 }
 
-var bufferPool = sync.Pool{
-	New: func() interface{} {
-		return make([]byte, copyBufSize)
-	},
-}
-
 type Handler struct {
 	logger         *slog.Logger
 	timeout        time.Duration
@@ -84,16 +76,22 @@ type Handler struct {
 	stats          stats.Store
 	baseFilter     mullvad.Filter
 	transportCache *util.LRUCache[*http.Transport]
+	upstreamSOCKS5 string
 }
 
 func New(logger *slog.Logger, timeout time.Duration, mullvad mullvad.ServerProvider, httpsOnly bool, statsStore stats.Store, baseFilter mullvad.Filter) *Handler {
+	return NewWithUpstream(logger, timeout, mullvad, httpsOnly, statsStore, baseFilter, "")
+}
+
+func NewWithUpstream(logger *slog.Logger, timeout time.Duration, mullvad mullvad.ServerProvider, httpsOnly bool, statsStore stats.Store, baseFilter mullvad.Filter, upstreamSOCKS5 string) *Handler {
 	return &Handler{
-		logger:     logger,
-		timeout:    timeout,
-		mullvad:    mullvad,
-		httpsOnly:  httpsOnly,
-		stats:      statsStore,
-		baseFilter: baseFilter,
+		logger:         logger,
+		timeout:        timeout,
+		mullvad:        mullvad,
+		httpsOnly:      httpsOnly,
+		stats:          statsStore,
+		baseFilter:     baseFilter,
+		upstreamSOCKS5: upstreamSOCKS5,
 		transportCache: util.NewLRUCacheWithEvict[*http.Transport](maxTransportCacheSize, func(tr *http.Transport) {
 			if tr != nil {
 				tr.CloseIdleConnections()
@@ -192,18 +190,46 @@ func (h *Handler) proxyHTTP(parentCtx context.Context, w http.ResponseWriter, r 
 // roundTrip performs a single proxy attempt: resolves a SOCKS5 server, builds
 // a transport, and executes the request.
 func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL string, body []byte) *roundTripResult {
-	socksAddr, remoteID, err := h.resolveSOCKS5(ctx, r)
-	if err != nil {
-		return &roundTripResult{err: err}
-	}
+	var tr *http.Transport
+	var remoteID string
 
-	tr := h.getTransport(socksAddr)
-	if tr == nil {
-		socksDialer, err := proxy.SOCKS5("tcp", socksAddr, nil, &net.Dialer{Timeout: h.timeout})
-		if err != nil {
-			return &roundTripResult{remoteID: remoteID, err: err}
+	if strings.HasPrefix(h.upstreamSOCKS5, "direct://") {
+		upstream := strings.TrimPrefix(h.upstreamSOCKS5, "direct://")
+		remoteID = upstream
+		tr = h.getTransport(h.upstreamSOCKS5)
+		if tr == nil {
+			dialer, err := proxy.SOCKS5("tcp", upstream, nil, &net.Dialer{Timeout: h.timeout})
+			if err != nil {
+				return &roundTripResult{remoteID: remoteID, err: err}
+			}
+			tr = h.createAndCacheTransport(h.upstreamSOCKS5, dialer)
 		}
-		tr = h.createAndCacheTransport(socksAddr, socksDialer)
+	} else {
+		socksAddr, resolvedID, err := h.resolveSOCKS5(ctx, r)
+		if err != nil {
+			return &roundTripResult{err: err}
+		}
+		remoteID = resolvedID
+
+		cacheKey := socksAddr
+		if h.upstreamSOCKS5 != "" {
+			cacheKey = socksAddr + "|" + h.upstreamSOCKS5
+		}
+
+		tr = h.getTransport(cacheKey)
+		if tr == nil {
+			socksDialer, err := proxy.SOCKS5("tcp", socksAddr, nil, &net.Dialer{Timeout: h.timeout})
+			if err != nil {
+				return &roundTripResult{remoteID: remoteID, err: err}
+			}
+			if h.upstreamSOCKS5 != "" {
+				socksDialer, err = proxy.SOCKS5("tcp", h.upstreamSOCKS5, nil, socksDialer)
+				if err != nil {
+					return &roundTripResult{remoteID: remoteID, err: err}
+				}
+			}
+			tr = h.createAndCacheTransport(cacheKey, socksDialer)
+		}
 	}
 
 	var reqBody io.Reader
@@ -293,8 +319,8 @@ func (h *Handler) writeResponse(w http.ResponseWriter, resp *http.Response, remo
 		h.stats.RecordRequest(remoteID)
 	}
 
-	buf := bufferPool.Get().([]byte)
-	defer bufferPool.Put(buf)
+	buf := util.BufferPool.Get().([]byte)
+	defer util.BufferPool.Put(buf)
 	_, _ = io.CopyBuffer(cw, resp.Body, buf)
 	cw.Flush()
 }
@@ -311,6 +337,11 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	if host == "" {
 		http.Error(w, "missing host", http.StatusBadRequest)
+		return
+	}
+
+	if strings.HasPrefix(h.upstreamSOCKS5, "direct://") {
+		h.handleConnectDirect(w, r, host)
 		return
 	}
 
@@ -335,6 +366,16 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 			lastErr = err
 			lastRemoteID = remoteID
 			continue
+		}
+		if h.upstreamSOCKS5 != "" {
+			dialer, err = proxy.SOCKS5("tcp", h.upstreamSOCKS5, nil, dialer)
+			if err != nil {
+				cancel()
+				h.logger.Debug("failed to create upstream SOCKS5 dialer, retrying", slog.String("error", err.Error()))
+				lastErr = err
+				lastRemoteID = remoteID
+				continue
+			}
 		}
 
 		targetConn, err := dialer.Dial("tcp", host)
@@ -371,7 +412,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		h.tunnel(clientConn, targetConn, remoteID)
+		util.Tunnel(clientConn, targetConn, remoteID, h.stats, h.logger)
 		return
 	}
 
@@ -384,76 +425,63 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "failed to reach target", http.StatusBadGateway)
 }
 
-type countingReader struct {
-	reader io.Reader
-	count  *int64
-}
+// handleConnectDirect handles CONNECT when upstreamSOCKS5 uses direct:// prefix.
+// It skips Mullvad and dials the upstream SOCKS5 proxy directly.
+func (h *Handler) handleConnectDirect(w http.ResponseWriter, r *http.Request, host string) {
+	upstream := strings.TrimPrefix(h.upstreamSOCKS5, "direct://")
+	remoteID := upstream
 
-func (c *countingReader) Read(p []byte) (int, error) {
-	n, err := c.reader.Read(p)
-	*c.count += int64(n)
-	return n, err
-}
+	var lastErr error
+	for attempt := 0; attempt < maxRetries; attempt++ {
+		dialer, err := proxy.SOCKS5("tcp", upstream, nil, &net.Dialer{Timeout: h.timeout})
+		if err != nil {
+			lastErr = err
+			continue
+		}
 
-// tunnel copies data bidirectionally between client and target connections.
-func (h *Handler) tunnel(clientConn, targetConn net.Conn, remoteID string) {
-	buf1 := bufferPool.Get().([]byte)
-	buf2 := bufferPool.Get().([]byte)
-	defer bufferPool.Put(buf1)
-	defer bufferPool.Put(buf2)
+		targetConn, err := dialer.Dial("tcp", host)
+		if err != nil {
+			h.logger.Debug("failed to connect to target via direct upstream, retrying", slog.String("error", err.Error()))
+			lastErr = err
+			continue
+		}
 
-	var sent, received int64
+		w.Header().Set("Connection", "Keep-Alive")
+		w.WriteHeader(http.StatusOK)
 
-	var wg sync.WaitGroup
-	wg.Add(2)
+		if h.stats != nil && remoteID != "" {
+			h.stats.RecordRequest(remoteID)
+		}
 
-	go func() {
-		defer wg.Done()
-		io.CopyBuffer(targetConn, &countingReader{reader: clientConn, count: &sent}, buf1)
-		targetConn.Close()
-	}()
-
-	go func() {
-		defer wg.Done()
-		io.CopyBuffer(clientConn, &countingReader{reader: targetConn, count: &received}, buf2)
-		clientConn.Close()
-	}()
-
-	var lastSent, lastRecv int64
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-
-	for {
-		select {
-		case <-ticker.C:
-			deltaSent := sent - lastSent
-			deltaRecv := received - lastRecv
-			if deltaSent > 0 || deltaRecv > 0 {
-				if h.stats != nil && remoteID != "" {
-					h.stats.RecordBytes(remoteID, deltaSent, deltaRecv)
-				}
-				lastSent = sent
-				lastRecv = received
-			}
-		case <-done:
-			ticker.Stop()
-			deltaSent := sent - lastSent
-			deltaRecv := received - lastRecv
-			if deltaSent > 0 || deltaRecv > 0 {
-				if h.stats != nil && remoteID != "" {
-					h.stats.RecordBytes(remoteID, deltaSent, deltaRecv)
-				}
-			}
+		hij, ok := w.(http.Hijacker)
+		if !ok {
+			targetConn.Close()
+			http.Error(w, "hijack not supported", http.StatusInternalServerError)
 			return
 		}
+
+		clientConn, _, err := hij.Hijack()
+		if err != nil {
+			targetConn.Close()
+			h.logger.Debug("failed to hijack connection, retrying", slog.String("error", err.Error()))
+			lastErr = err
+			continue
+		}
+
+		util.Tunnel(clientConn, targetConn, remoteID, h.stats, h.logger)
+		return
 	}
+
+	h.logger.Error("CONNECT direct request exhausted retries",
+		slog.String("error", lastErr.Error()),
+		slog.Int("attempts", maxRetries))
+	if h.stats != nil && remoteID != "" {
+		h.stats.RecordError(remoteID)
+	}
+	http.Error(w, "failed to reach target", http.StatusBadGateway)
 }
+
+
 
 // resolveSOCKS5 picks a Mullvad SOCKS5 server based on the request's
 // Proxy-Authorization header and returns its address and identifier.
@@ -531,16 +559,16 @@ func parseProxyAuthHeader(header string) (*ProxyAuth, error) {
 	return ParseProxyAuth(connStr)
 }
 
-// getTransport returns a cached http.Transport for the given SOCKS5 address.
-func (h *Handler) getTransport(socksAddr string) *http.Transport {
-	if tr, ok := h.transportCache.Get(socksAddr); ok {
+// getTransport returns a cached http.Transport for the given cache key.
+func (h *Handler) getTransport(key string) *http.Transport {
+	if tr, ok := h.transportCache.Get(key); ok {
 		return tr
 	}
 	return nil
 }
 
-// createAndCacheTransport builds and caches a new http.Transport for the SOCKS5 address.
-func (h *Handler) createAndCacheTransport(socksAddr string, dialer proxy.Dialer) *http.Transport {
+// createAndCacheTransport builds and caches a new http.Transport for the given cache key.
+func (h *Handler) createAndCacheTransport(key string, dialer proxy.Dialer) *http.Transport {
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			return dialer.Dial(network, addr)
@@ -554,7 +582,7 @@ func (h *Handler) createAndCacheTransport(socksAddr string, dialer proxy.Dialer)
 		IdleConnTimeout:       90 * time.Second,
 	}
 
-	h.transportCache.Set(socksAddr, tr)
+	h.transportCache.Set(key, tr)
 	return tr
 }
 

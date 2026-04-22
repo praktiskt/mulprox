@@ -15,6 +15,7 @@ import (
 	"github.com/praktiskt/mulprox/internal/health"
 	"github.com/praktiskt/mulprox/internal/mullvad"
 	"github.com/praktiskt/mulprox/internal/proxy"
+	"github.com/praktiskt/mulprox/internal/socks5"
 	"github.com/praktiskt/mulprox/internal/stats"
 
 	"github.com/spf13/cobra"
@@ -36,6 +37,17 @@ var serveCmd = &cobra.Command{
 		if err != nil {
 			return fmt.Errorf("failed to get https-only flag: %w", err)
 		}
+		socks5Port, err := cmd.Flags().GetInt("socks5-port")
+		if err != nil {
+			return fmt.Errorf("failed to get socks5-port flag: %w", err)
+		}
+		upstreamSOCKS5, err := cmd.Flags().GetString("upstream-socks5")
+		if err != nil {
+			return fmt.Errorf("failed to get upstream-socks5 flag: %w", err)
+		}
+		if upstreamSOCKS5 == "" {
+			upstreamSOCKS5 = os.Getenv("SOCKS5_PROXY")
+		}
 
 		mullvadProvider := mullvad.New()
 		statsStore := stats.NewInMemoryStore(logger)
@@ -48,7 +60,26 @@ var serveCmd = &cobra.Command{
 		ctx, cancelStats := context.WithCancel(context.Background())
 		statsStore.Start()
 
-		proxyHandler := proxy.New(logger, timeout, mullvadProvider, httpsOnly, statsStore, buildBaseFilter())
+		var proxyHandler *proxy.Handler
+		if upstreamSOCKS5 != "" {
+			proxyHandler = proxy.NewWithUpstream(logger, timeout, mullvadProvider, httpsOnly, statsStore, buildBaseFilter(), upstreamSOCKS5)
+		} else {
+			proxyHandler = proxy.New(logger, timeout, mullvadProvider, httpsOnly, statsStore, buildBaseFilter())
+		}
+
+		if socks5Port > 0 {
+			socks5Server := socks5.NewServer(logger, timeout, mullvadProvider, statsStore, buildBaseFilter())
+			socks5Addr := fmt.Sprintf("%s:%d", host, socks5Port)
+			if err := socks5Server.Listen(socks5Addr); err != nil {
+				return fmt.Errorf("failed to start SOCKS5 server: %w", err)
+			}
+			logger.Info("SOCKS5 server listening", slog.String("addr", socks5Server.Addr()))
+			go func() {
+				if err := socks5Server.Serve(); err != nil {
+					logger.Error("SOCKS5 server error", slog.String("error", err.Error()))
+				}
+			}()
+		}
 		dashboardHandler := dashboard.New(statsStore)
 		healthHandler := health.New(statsStore)
 
@@ -120,6 +151,8 @@ func init() {
 	serveCmd.Flags().String("host", "0.0.0.0", "Host to bind to")
 	serveCmd.Flags().IntP("port", "p", 8080, "Port to listen on")
 	serveCmd.Flags().Bool("https-only", false, "Reject HTTP requests, only allow HTTPS")
+	serveCmd.Flags().Int("socks5-port", 0, "SOCKS5 server port (0 = disabled)")
+	serveCmd.Flags().String("upstream-socks5", "", "Upstream SOCKS5 proxy address for chaining (also SOCKS5_PROXY env)")
 	registerFilterFlags(serveCmd)
 	rootCmd.AddCommand(serveCmd)
 }

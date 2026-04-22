@@ -16,7 +16,9 @@ import (
 	"github.com/praktiskt/mulprox/internal/dashboard"
 	"github.com/praktiskt/mulprox/internal/mullvad"
 	"github.com/praktiskt/mulprox/internal/proxy"
+	"github.com/praktiskt/mulprox/internal/socks5"
 	"github.com/praktiskt/mulprox/internal/stats"
+	xproxy "golang.org/x/net/proxy"
 )
 
 func TestSeedDeterminism(t *testing.T) {
@@ -414,5 +416,203 @@ func TestStatsRecording(t *testing.T) {
 
 	if !strings.Contains(string(body), "localhost") && !strings.Contains(string(body), "mullvad") {
 		t.Logf("dashboard proxies response: %s", string(body)[:min(500, len(body))])
+	}
+}
+
+func TestSOCKS5ServerDirect(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
+	p := mullvad.New()
+	_, err := p.FetchMullvadList(ctx)
+	if err != nil {
+		t.Fatalf("failed to fetch mullvad list: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	statsStore := stats.NewInMemoryStore(logger)
+
+	server := socks5.NewServer(logger, 30*time.Second, p, statsStore, mullvad.Filter{})
+	if err := server.Listen("127.0.0.1:0"); err != nil {
+		t.Fatalf("failed to start SOCKS5 server: %v", err)
+	}
+	defer server.Close()
+
+	go func() {
+		if err := server.Serve(); err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
+			t.Errorf("SOCKS5 server error: %v", err)
+		}
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+
+	dialer, err := xproxy.SOCKS5("tcp", server.Addr(), nil, &net.Dialer{Timeout: 30 * time.Second})
+	if err != nil {
+		t.Fatalf("failed to create SOCKS5 dialer: %v", err)
+	}
+
+	client := &http.Client{
+		Transport: &http.Transport{
+			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
+				return dialer.Dial(network, addr)
+			},
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://httpbin.org/ip", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("SOCKS5 direct request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Origin string `json:"origin"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if result.Origin == "" {
+		t.Fatal("expected non-empty origin IP")
+	}
+	t.Logf("SOCKS5 direct request succeeded, exit IP: %s", result.Origin)
+}
+
+func TestMultiHopChaining(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping integration test in short mode")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+
+	p := mullvad.New()
+	_, err := p.FetchMullvadList(ctx)
+	if err != nil {
+		t.Fatalf("failed to fetch mullvad list: %v", err)
+	}
+
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	statsStoreA := stats.NewInMemoryStore(logger)
+	statsStoreA.Start()
+	defer statsStoreA.Stop()
+	statsStoreB := stats.NewInMemoryStore(logger)
+	statsStoreB.Start()
+	defer statsStoreB.Stop()
+
+	// Instance B: SOCKS5 server
+	serverB := socks5.NewServer(logger, 30*time.Second, p, statsStoreB, mullvad.Filter{})
+	if err := serverB.Listen("127.0.0.1:0"); err != nil {
+		t.Fatalf("failed to start SOCKS5 server B: %v", err)
+	}
+	defer serverB.Close()
+
+	go func() {
+		if err := serverB.Serve(); err != nil && !strings.Contains(err.Error(), "use of closed network connection") {
+			t.Errorf("SOCKS5 server B error: %v", err)
+		}
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Instance A: HTTP proxy with direct upstream pointing to B's SOCKS5
+	proxyA := proxy.NewWithUpstream(logger, 30*time.Second, p, false, statsStoreA, mullvad.Filter{}, "direct://"+serverB.Addr())
+
+	ts := &http.Server{
+		Handler:           proxyA,
+		ReadTimeout:       30 * time.Second,
+		ReadHeaderTimeout: 10 * time.Second,
+		WriteTimeout:      60 * time.Second,
+		IdleTimeout:       120 * time.Second,
+	}
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("failed to create listener for A: %v", err)
+	}
+	defer listener.Close()
+
+	go func() {
+		if err := ts.Serve(listener); err != http.ErrServerClosed {
+			t.Errorf("proxy server A error: %v", err)
+		}
+	}()
+	defer ts.Close()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Client uses A as HTTP proxy
+	client := &http.Client{
+		Transport: &http.Transport{
+			Proxy: func(*http.Request) (*url.URL, error) {
+				return url.Parse("http://" + listener.Addr().String())
+			},
+		},
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://httpbin.org/ip", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("multi-hop request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	var result struct {
+		Origin string `json:"origin"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+	if result.Origin == "" {
+		t.Fatal("expected non-empty origin IP")
+	}
+	t.Logf("Multi-hop request succeeded, exit IP: %s", result.Origin)
+
+	// Verify request passed through A (stats should show upstream SOCKS5 address)
+	foundA := false
+	for _, r := range statsStoreA.GetAllRemoteStats() {
+		if r.RequestCount.Load() > 0 {
+			foundA = true
+			t.Logf("proxy A recorded upstream: %s, requests=%d", r.RemoteID, r.RequestCount.Load())
+			if r.RemoteID != serverB.Addr() {
+				t.Errorf("expected A's remote ID to be B's address %s, got %s", serverB.Addr(), r.RemoteID)
+			}
+		}
+	}
+	if !foundA {
+		t.Fatal("proxy A did not record any request stats")
+	}
+
+	// Verify request passed through B (stats should show a Mullvad hostname, not localhost)
+	foundB := false
+	for _, r := range statsStoreB.GetAllRemoteStats() {
+		if r.RequestCount.Load() > 0 {
+			foundB = true
+			t.Logf("proxy B recorded remote: %s, requests=%d, country=%s", r.RemoteID, r.RequestCount.Load(), r.Country)
+			if r.RemoteID == serverB.Addr() || r.RemoteID == "" {
+				t.Errorf("expected B's remote ID to be a Mullvad hostname, got %s", r.RemoteID)
+			}
+		}
+	}
+	if !foundB {
+		t.Fatal("proxy B did not record any request stats")
 	}
 }

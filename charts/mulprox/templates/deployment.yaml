@@ -36,6 +36,16 @@ spec:
           ports:
             - containerPort: {{ .Values.service.targetPort }}
           command: ["/app", "serve"]
+          args:
+            {{- if .Values.socks5.enabled }}
+            - --socks5-port={{ .Values.socks5.port }}
+            {{- end }}
+            {{- if .Values.upstreamSOCKS5 }}
+            - --upstream-socks5={{ .Values.upstreamSOCKS5 }}
+            {{- end }}
+            {{- range .Values.extraArgs }}
+            - {{ . | quote }}
+            {{- end }}
           {{- with .Values.health.livenessProbe }}
           livenessProbe:
             {{- toYaml . | nindent 12 }}
