@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
@@ -20,6 +21,7 @@ const (
 	DefaultFlushInterval = 200 * time.Millisecond
 	WindowSize           = 120
 	SMAPeriod            = 5
+	stopTimeout          = 10 * time.Second
 )
 
 type Store interface {
@@ -66,7 +68,7 @@ type InMemoryStore struct {
 	updateCh      chan statUpdate
 	stopCh        chan struct{}
 	wg            sync.WaitGroup
-	started       bool
+	started       atomic.Bool
 
 	window             []WindowStat
 	windowIdx          int
@@ -95,10 +97,9 @@ func NewInMemoryStore(logger *slog.Logger) *InMemoryStore {
 }
 
 func (s *InMemoryStore) Start() {
-	if s.started {
+	if !s.started.CompareAndSwap(false, true) {
 		return
 	}
-	s.started = true
 	s.wg.Add(1)
 	go s.runFlusher()
 	s.wg.Add(1)
@@ -106,7 +107,7 @@ func (s *InMemoryStore) Start() {
 }
 
 func (s *InMemoryStore) Stop() {
-	if !s.started {
+	if !s.started.CompareAndSwap(true, false) {
 		return
 	}
 	close(s.stopCh)
@@ -117,9 +118,8 @@ func (s *InMemoryStore) Stop() {
 	}()
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(stopTimeout):
 	}
-	s.started = false
 }
 
 func (s *InMemoryStore) runFlusher() {
@@ -310,7 +310,7 @@ apply:
 }
 
 func (s *InMemoryStore) sendNonBlocking(update statUpdate) {
-	if !s.started {
+	if !s.started.Load() {
 		return
 	}
 	select {
@@ -327,7 +327,7 @@ func (s *InMemoryStore) RecordRequest(remoteID string) {
 }
 
 func (s *InMemoryStore) RecordBytes(remoteID string, sent, received int64) {
-	if !s.started {
+	if !s.started.Load() {
 		return
 	}
 	s.sendNonBlocking(statUpdate{typ: 1, id: remoteID, sent: uint64(sent), recv: uint64(received)})
@@ -414,7 +414,7 @@ func (c *Collector) Stop() {
 
 	select {
 	case <-done:
-	case <-time.After(2 * time.Second):
+	case <-time.After(stopTimeout):
 	}
 }
 
@@ -491,7 +491,7 @@ func (c *Collector) checkHealth(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			for s := range jobs {
-				serverCtx, cancel := context.WithTimeout(context.Background(), c.config.HealthCheckHTTPTimeout)
+				serverCtx, cancel := context.WithTimeout(ctx, c.config.HealthCheckHTTPTimeout)
 				currentStats := c.store.GetRemoteStats(s.Hostname)
 				health := c.pingServer(serverCtx, s.SOCKS5, s.SOCKSPort, currentStats.Health.ConsecutiveFailures, currentStats.Health.ConsecutiveSuccesses)
 				cancel()
@@ -501,7 +501,14 @@ func (c *Collector) checkHealth(ctx context.Context) {
 	}
 
 	for _, server := range servers {
-		jobs <- server
+		select {
+		case jobs <- server:
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			close(results)
+			return
+		}
 	}
 	close(jobs)
 
@@ -544,7 +551,7 @@ func (c *Collector) CheckHealthOne(ctx context.Context) (mullvad.Server, error) 
 		go func() {
 			defer wg.Done()
 			for s := range jobs {
-				serverCtx, cancel := context.WithTimeout(context.Background(), c.config.HealthCheckHTTPTimeout)
+				serverCtx, cancel := context.WithTimeout(ctx, c.config.HealthCheckHTTPTimeout)
 				currentStats := c.store.GetRemoteStats(s.Hostname)
 				health := c.pingServer(serverCtx, s.SOCKS5, s.SOCKSPort, currentStats.Health.ConsecutiveFailures, currentStats.Health.ConsecutiveSuccesses)
 				cancel()
@@ -554,7 +561,14 @@ func (c *Collector) CheckHealthOne(ctx context.Context) (mullvad.Server, error) 
 	}
 
 	for _, server := range servers {
-		jobs <- server
+		select {
+		case jobs <- server:
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			close(results)
+			return mullvad.Server{}, ctx.Err()
+		}
 	}
 	close(jobs)
 
@@ -577,7 +591,7 @@ func (c *Collector) pingServer(ctx context.Context, socksHost string, socksPort 
 	var tcpPings []int64
 
 	for i := 0; i < c.config.PingCount; i++ {
-		latency := c.measureSOCKS5Latency(socksHost, socksPort)
+		latency := c.measureSOCKS5Latency(ctx, socksHost, socksPort)
 		if latency > 0 {
 			tcpPings = append(tcpPings, latency)
 		}
@@ -625,11 +639,12 @@ func (c *Collector) pingServer(ctx context.Context, socksHost string, socksPort 
 	return health
 }
 
-func (c *Collector) measureSOCKS5Latency(socksHost string, socksPort int) int64 {
+func (c *Collector) measureSOCKS5Latency(ctx context.Context, socksHost string, socksPort int) int64 {
 	addr := net.JoinHostPort(socksHost, strconv.Itoa(socksPort))
 
+	d := net.Dialer{Timeout: 1 * time.Second}
 	start := time.Now()
-	conn, err := net.DialTimeout("tcp", addr, 1*time.Second)
+	conn, err := d.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return 0
 	}
@@ -651,7 +666,21 @@ func (c *Collector) measureSOCKS5Health(ctx context.Context, socksHost string, s
 		DisableKeepAlives:   true,
 		TLSHandshakeTimeout: 5 * time.Second,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialer.Dial(network, addr)
+			type result struct {
+				conn net.Conn
+				err  error
+			}
+			done := make(chan result, 1)
+			go func() {
+				conn, err := dialer.Dial(network, addr)
+				done <- result{conn, err}
+			}()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case r := <-done:
+				return r.conn, r.err
+			}
 		},
 	}
 	defer transport.CloseIdleConnections()
@@ -733,7 +762,21 @@ func (c *Collector) checkEgressIPForServer(ctx context.Context, socksHost string
 		return
 	}
 	transport.DialContext = func(ctx context.Context, network, addr string) (net.Conn, error) {
-		return dc.Dial(network, addr)
+		type result struct {
+			conn net.Conn
+			err  error
+		}
+		done := make(chan result, 1)
+		go func() {
+			conn, err := dc.Dial(network, addr)
+			done <- result{conn, err}
+		}()
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case r := <-done:
+			return r.conn, r.err
+		}
 	}
 
 	client := &http.Client{

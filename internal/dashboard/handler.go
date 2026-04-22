@@ -68,61 +68,95 @@ func (h *Handler) serveProxies(w http.ResponseWriter, r *http.Request) {
 		IsSorting: isSorting,
 	}
 
-	ProxiesTableTemplate.Execute(w, data)
+	if err := ProxiesTableTemplate.Execute(w, data); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+func compareRemotes(a, b *stats.RemoteStats, field string) int {
+	switch field {
+	case "hostname":
+		return strings.Compare(a.Hostname, b.Hostname)
+	case "country":
+		return strings.Compare(a.Country, b.Country)
+	case "city":
+		return strings.Compare(a.City, b.City)
+	case "egress_ip":
+		return strings.Compare(a.EgressIP, b.EgressIP)
+	case "status":
+		if a.Health.Online != b.Health.Online {
+			if a.Health.Online {
+				return -1
+			}
+			return 1
+		}
+		return 0
+	case "latency":
+		ingA := a.Health.PingMean
+		ingB := b.Health.PingMean
+		onlineA := a.Health.Online
+		onlineB := b.Health.Online
+		hasPingA := onlineA && ingA > 0
+		hasPingB := onlineB && ingB > 0
+		if hasPingA != hasPingB {
+			if hasPingA {
+				return -1
+			}
+			return 1
+		}
+		if hasPingA {
+			if ingA < ingB {
+				return -1
+			}
+			if ingA > ingB {
+				return 1
+			}
+		}
+		return 0
+	case "requests":
+		ra := a.RequestCount.Load()
+		rb := b.RequestCount.Load()
+		if ra < rb {
+			return -1
+		}
+		if ra > rb {
+			return 1
+		}
+		return 0
+	case "errors":
+		ea := a.ErrorCount.Load()
+		eb := b.ErrorCount.Load()
+		if ea < eb {
+			return -1
+		}
+		if ea > eb {
+			return 1
+		}
+		return 0
+	case "last_used":
+		if a.LastUsed.Before(b.LastUsed) {
+			return -1
+		}
+		if a.LastUsed.After(b.LastUsed) {
+			return 1
+		}
+		return 0
+	default:
+		ra := a.RequestCount.Load()
+		rb := b.RequestCount.Load()
+		if ra < rb {
+			return -1
+		}
+		if ra > rb {
+			return 1
+		}
+		return 0
+	}
 }
 
 func sortRemotes(remotes []*stats.RemoteStats, field, dir string) []*stats.RemoteStats {
 	less := func(i, j int) bool {
-		var cmp int
-		switch field {
-		case "hostname":
-			cmp = strings.Compare(remotes[i].Hostname, remotes[j].Hostname)
-		case "country":
-			cmp = strings.Compare(remotes[i].Country, remotes[j].Country)
-		case "city":
-			cmp = strings.Compare(remotes[i].City, remotes[j].City)
-		case "egress_ip":
-			cmp = strings.Compare(remotes[i].EgressIP, remotes[j].EgressIP)
-		case "status":
-			if remotes[i].Health.Online != remotes[j].Health.Online {
-				return remotes[i].Health.Online && !remotes[j].Health.Online
-			}
-			cmp = 0
-		case "latency":
-			ingI := remotes[i].Health.PingMean
-			ingJ := remotes[j].Health.PingMean
-			onlineI := remotes[i].Health.Online
-			onlineJ := remotes[j].Health.Online
-			hasPingI := onlineI && ingI > 0
-			hasPingJ := onlineJ && ingJ > 0
-			if hasPingI != hasPingJ {
-				return hasPingI
-			}
-			if hasPingI && ingI != ingJ {
-				return ingI < ingJ
-			}
-			cmp = 0
-		case "requests":
-			if remotes[i].RequestCount.Load() != remotes[j].RequestCount.Load() {
-				return remotes[i].RequestCount.Load() < remotes[j].RequestCount.Load()
-			}
-			cmp = 0
-		case "errors":
-			if remotes[i].ErrorCount.Load() != remotes[j].ErrorCount.Load() {
-				return remotes[i].ErrorCount.Load() < remotes[j].ErrorCount.Load()
-			}
-			cmp = 0
-		case "last_used":
-			if !remotes[i].LastUsed.Equal(remotes[j].LastUsed) {
-				return remotes[i].LastUsed.Before(remotes[j].LastUsed)
-			}
-			cmp = 0
-		default:
-			if remotes[i].RequestCount.Load() != remotes[j].RequestCount.Load() {
-				return remotes[i].RequestCount.Load() < remotes[j].RequestCount.Load()
-			}
-			cmp = 0
-		}
+		cmp := compareRemotes(remotes[i], remotes[j], field)
 		if cmp == 0 {
 			cmp = strings.Compare(remotes[i].Hostname, remotes[j].Hostname)
 		}

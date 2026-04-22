@@ -7,7 +7,7 @@ import (
 	"github.com/praktiskt/mulprox/internal/stats"
 )
 
-var livezResponse = []byte("{\"status\":\"ok\"}\n")
+const livezResponse = `{"status":"ok"}` + "\n"
 
 type Handler struct {
 	store stats.Store
@@ -20,7 +20,10 @@ func New(store stats.Store) *Handler {
 func (*Handler) Livez(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	w.Write(livezResponse)
+	if _, err := 		w.Write([]byte(livezResponse)); err != nil {
+		// Best effort; can't write error after headers sent.
+		_ = err
+	}
 }
 
 type readyzResp struct {
@@ -49,5 +52,8 @@ func (h *Handler) Readyz(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 
-	json.NewEncoder(w).Encode(resp)
+	if err := json.NewEncoder(w).Encode(resp); err != nil {
+		// Best effort; headers already sent.
+		_ = err
+	}
 }

@@ -31,6 +31,7 @@ func Execute() error {
 }
 
 func init() {
+	logger = slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
 	rootCmd.PersistentFlags().DurationVar(&timeout, "timeout", 10*time.Second, "Request timeout")
 	rootCmd.PersistentFlags().BoolVar(&checkMullvad, "check-mullvad", false, "Check local Mullvad status and exit")
 	rootCmd.PersistentFlags().BoolVarP(&debug, "debug", "d", false, "Enable debug logging")

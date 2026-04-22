@@ -2,13 +2,12 @@ package mullvad
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"math/rand/v2"
 	"net"
-	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -20,7 +19,7 @@ import (
 )
 
 const (
-	MullvadListURL      = "https://mullvad.net/en/servers"
+	MullvadListURL      = "https://api.mullvad.net/www/relays/all/"
 	MullvadURL          = "https://am.i.mullvad.net/json"
 	MullvadListCacheTTL = 3 * time.Hour
 )
@@ -157,8 +156,8 @@ func (p *Provider) GetFilteredServerWithHealth(ctx context.Context, filter Filte
 	return server, nil
 }
 
-func (p *Provider) GetFilteredServers(filter Filter) ([]Server, error) {
-	mullvadServers, err := p.FetchMullvadList(context.Background())
+func (p *Provider) GetFilteredServers(ctx context.Context, filter Filter) ([]Server, error) {
+	mullvadServers, err := p.FetchMullvadList(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -169,6 +168,18 @@ func (p *Provider) GetFilteredServers(filter Filter) ([]Server, error) {
 func (f Filter) isEmpty() bool {
 	return len(f.Countries) == 0 && len(f.Cities) == 0 && len(f.Providers) == 0 &&
 		f.Seed == 0 && f.Owned == nil && f.MinSpeed == 0 && !f.Multihop
+}
+
+func (f Filter) Clone() Filter {
+	return Filter{
+		Countries: append([]string(nil), f.Countries...),
+		Cities:    append([]string(nil), f.Cities...),
+		Providers: append([]string(nil), f.Providers...),
+		Seed:      f.Seed,
+		Owned:     f.Owned,
+		MinSpeed:  f.MinSpeed,
+		Multihop:  f.Multihop,
+	}
 }
 
 func (p *Provider) filterByFilter(servers []Server, filter Filter) []Server {
@@ -247,7 +258,10 @@ func (p *Provider) FetchMullvadList(ctx context.Context) ([]Server, error) {
 			return nil, err
 		}
 
-		mullvadServers := parseMullvadRelays(string(body))
+		mullvadServers, err := parseMullvadRelays(body)
+		if err != nil {
+			return nil, err
+		}
 
 		sort.Slice(mullvadServers, func(i, j int) bool {
 			return mullvadServers[i].Hostname < mullvadServers[j].Hostname
@@ -267,66 +281,47 @@ func (p *Provider) FetchMullvadList(ctx context.Context) ([]Server, error) {
 	return result.([]Server), nil
 }
 
-var relayRe = regexp.MustCompile(`hostname:"(?P<hostname>[^"]+)",country_code:"(?P<flag>[^"]+)",country_name:"(?P<country>[^"]+)",city_code:"[^"]+",city_name:"(?P<city>[^"]+)",fqdn:"[^"]+",active:(?P<active>true|false),owned:(?P<owned>true|false),provider:"(?P<provider>[^"]+)",ipv4_addr_in:"(?P<ipv4>[^"]+)",ipv6_addr_in:"(?P<ipv6>[^"]+)",network_port_speed:(?P<speed>\d+),stboot:(?:true|false),type:"[^"]+",status_messages:\[\],pubkey:"[^"]+",multihop_port:(?P<multihop>\d+),socks_name:"(?P<socks>[^"]+)",socks_port:(?P<socksport>\d+),daita:`)
+type relayJSON struct {
+	Hostname         string `json:"hostname"`
+	CountryCode      string `json:"country_code"`
+	CountryName      string `json:"country_name"`
+	CityName         string `json:"city_name"`
+	Active           bool   `json:"active"`
+	Owned            bool   `json:"owned"`
+	Provider         string `json:"provider"`
+	IPv4AddrIn       string `json:"ipv4_addr_in"`
+	IPv6AddrIn       string `json:"ipv6_addr_in"`
+	NetworkPortSpeed int    `json:"network_port_speed"`
+	MultihopPort     int    `json:"multihop_port"`
+	SocksName        string `json:"socks_name"`
+	SocksPort        int    `json:"socks_port"`
+}
 
-var relayNameIndex = func() map[string]int {
-	names := relayRe.SubexpNames()
-	m := make(map[string]int, len(names))
-	for i, n := range names {
-		m[n] = i
-	}
-	return m
-}()
-
-func parseMullvadRelays(html string) []Server {
-	start := strings.Index(html, "relays:[")
-	if start == -1 {
-		return nil
-	}
-
-	bracketCount := 1
-	end := len(html)
-	for i := start + 7; i < len(html); i++ {
-		if html[i] == '[' {
-			bracketCount++
-		} else if html[i] == ']' {
-			bracketCount--
-			if bracketCount == 0 {
-				end = i + 1
-				break
-			}
-		}
+func parseMullvadRelays(data []byte) ([]Server, error) {
+	var relays []relayJSON
+	if err := json.Unmarshal(data, &relays); err != nil {
+		return nil, fmt.Errorf("unmarshal mullvad relays: %w", err)
 	}
 
-	jsArray := html[start+7 : end]
-
-	matches := relayRe.FindAllStringSubmatch(jsArray, -1)
-
-	var servers []Server
-	for _, m := range matches {
-		if m[relayNameIndex["active"]] != "true" {
+	servers := make([]Server, 0, len(relays))
+	for _, r := range relays {
+		if !r.Active {
 			continue
 		}
-
-		speed, _ := strconv.Atoi(m[relayNameIndex["speed"]])
-		multihop, _ := strconv.Atoi(m[relayNameIndex["multihop"]])
-		socksPort, _ := strconv.Atoi(m[relayNameIndex["socksport"]])
-
 		servers = append(servers, Server{
-			Flag:      m[relayNameIndex["flag"]],
-			Country:   m[relayNameIndex["country"]],
-			City:      m[relayNameIndex["city"]],
-			SOCKS5:    m[relayNameIndex["socks"]],
-			IPv4:      m[relayNameIndex["ipv4"]],
-			IPv6:      m[relayNameIndex["ipv6"]],
-			Speed:     speed,
-			Multihop:  multihop,
-			Owned:     m[relayNameIndex["owned"]] == "true",
-			Provider:  m[relayNameIndex["provider"]],
-			Hostname:  m[relayNameIndex["hostname"]],
-			SOCKSPort: socksPort,
+			Flag:      r.CountryCode,
+			Country:   r.CountryName,
+			City:      r.CityName,
+			SOCKS5:    r.SocksName,
+			SOCKSPort: r.SocksPort,
+			IPv4:      r.IPv4AddrIn,
+			IPv6:      r.IPv6AddrIn,
+			Speed:     r.NetworkPortSpeed,
+			Multihop:  r.MultihopPort,
+			Owned:     r.Owned,
+			Provider:  r.Provider,
+			Hostname:  r.Hostname,
 		})
 	}
-
-	return servers
+	return servers, nil
 }

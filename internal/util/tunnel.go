@@ -11,9 +11,10 @@ import (
 )
 
 const copyBufSize = 32 * 1024
+const tunnelIdleTimeout = 5 * time.Minute
 
 var BufferPool = sync.Pool{
-	New: func() interface{} {
+	New: func() any {
 		return make([]byte, copyBufSize)
 	},
 }
@@ -54,6 +55,13 @@ func Tunnel(clientConn, targetConn net.Conn, remoteID string, st stats.Store, lo
 		clientConn.Close()
 	}()
 
+	extendDeadline := func() {
+		t := time.Now().Add(tunnelIdleTimeout)
+		clientConn.SetReadDeadline(t)
+		targetConn.SetReadDeadline(t)
+	}
+	extendDeadline()
+
 	var lastSent, lastRecv int64
 	ticker := time.NewTicker(100 * time.Millisecond)
 	defer ticker.Stop()
@@ -75,6 +83,7 @@ func Tunnel(clientConn, targetConn net.Conn, remoteID string, st stats.Store, lo
 				}
 				lastSent = sent
 				lastRecv = received
+				extendDeadline()
 			}
 		case <-done:
 			ticker.Stop()

@@ -105,6 +105,12 @@ func (c *LRUCache[V]) Clear() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if c.onEvict != nil {
+		for _, elem := range c.entries {
+			entry := elem.Value.(*CacheEntry[V])
+			c.onEvict(entry.Value)
+		}
+	}
 	c.entries = make(map[string]*list.Element)
 	c.list.Init()
 }

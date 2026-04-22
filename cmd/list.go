@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"text/tabwriter"
+	"time"
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
 
@@ -20,7 +22,9 @@ var listCmd = &cobra.Command{
 		}
 
 		p := mullvad.New()
-		servers, err := p.GetFilteredServers(buildBaseFilter())
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		servers, err := p.GetFilteredServers(ctx, buildBaseFilter())
 		if err != nil {
 			return fmt.Errorf("failed to list servers: %w", err)
 		}

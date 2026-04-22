@@ -20,7 +20,10 @@ var getCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	RunE: func(cmd *cobra.Command, args []string) error {
 		url := args[0]
-		outputPath, _ := cmd.Flags().GetString("output")
+		outputPath, err := cmd.Flags().GetString("output")
+		if err != nil {
+			return fmt.Errorf("failed to get output flag: %w", err)
+		}
 
 		ctx, cancel := context.WithTimeout(context.Background(), timeout)
 		defer cancel()
@@ -71,8 +74,8 @@ var getCmd = &cobra.Command{
 
 func writeOutput(path string, content []byte) error {
 	if path == "-" || path == "" {
-		os.Stdout.Write(content)
-		return nil
+		_, err := os.Stdout.Write(content)
+		return err
 	}
 	return os.WriteFile(path, content, 0o644)
 }

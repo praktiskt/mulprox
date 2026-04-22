@@ -3,11 +3,13 @@ package socks5
 import (
 	"context"
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"strconv"
+	"sync"
 	"time"
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
@@ -45,7 +47,11 @@ type Server struct {
 	baseFilter mullvad.Filter
 	listener   net.Listener
 	addr       string
+	mu         sync.Mutex
+	sem        chan struct{}
 }
+
+const maxConcurrentConns = 1000
 
 func NewServer(logger *slog.Logger, timeout time.Duration, mv mullvad.ServerProvider, st stats.Store, baseFilter mullvad.Filter) *Server {
 	return &Server{
@@ -54,6 +60,7 @@ func NewServer(logger *slog.Logger, timeout time.Duration, mv mullvad.ServerProv
 		mullvad:    mv,
 		stats:      st,
 		baseFilter: baseFilter,
+		sem:        make(chan struct{}, maxConcurrentConns),
 	}
 }
 
@@ -62,30 +69,50 @@ func (s *Server) Listen(addr string) error {
 	if err != nil {
 		return err
 	}
+	s.mu.Lock()
 	s.listener = ln
 	s.addr = ln.Addr().String()
+	s.mu.Unlock()
 	return nil
 }
 
 func (s *Server) Addr() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.addr
 }
 
 func (s *Server) Serve() error {
 	for {
-		conn, err := s.listener.Accept()
+		s.mu.Lock()
+		ln := s.listener
+		s.mu.Unlock()
+		if ln == nil {
+			return fmt.Errorf("server not listening")
+		}
+		conn, err := ln.Accept()
 		if err != nil {
-			if ne, ok := err.(net.Error); ok && ne.Temporary() {
+			if errors.Is(err, net.ErrClosed) {
+				return err
+			}
+			var netErr net.Error
+			if errors.As(err, &netErr) && netErr.Timeout() {
 				s.logger.Debug("temporary accept error", slog.String("error", err.Error()))
 				continue
 			}
 			return err
 		}
-		go s.handleConn(conn)
+		s.sem <- struct{}{}
+		go func() {
+			defer func() { <-s.sem }()
+			s.handleConn(conn)
+		}()
 	}
 }
 
 func (s *Server) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.listener != nil {
 		return s.listener.Close()
 	}
@@ -128,7 +155,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	ctx, cancel := context.WithTimeout(context.Background(), s.timeout)
 	defer cancel()
 
-	filter := s.baseFilter
+	filter := s.baseFilter.Clone()
 	if auth.filter != nil {
 		auth.filter.ApplyTo(&filter)
 	}
@@ -159,9 +186,9 @@ func (s *Server) handleConn(clientConn net.Conn) {
 		s.reply(clientConn, replyHostUnreach, nil)
 		return
 	}
-	defer targetConn.Close()
 
 	if err := s.reply(clientConn, replySuccess, targetConn.LocalAddr()); err != nil {
+		targetConn.Close()
 		s.logger.Debug("failed to write reply", slog.String("error", err.Error()))
 		return
 	}
@@ -218,7 +245,9 @@ func (s *Server) negotiateAuth(conn net.Conn) (authResult, error) {
 		return authResult{raw: "none"}, nil
 	}
 
-	conn.Write([]byte{socks5Version, authNoAccept})
+	if _, err := conn.Write([]byte{socks5Version, authNoAccept}); err != nil {
+		return authResult{}, err
+	}
 	return authResult{}, fmt.Errorf("no acceptable auth methods")
 }
 

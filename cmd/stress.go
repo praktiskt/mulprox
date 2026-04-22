@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -58,6 +59,7 @@ var stressCmd = &cobra.Command{
 		statsCollector := stats.NewCollector(logger, statsStore, mullvadProvider, stats.DefaultConfig())
 
 		ctx, cancelStats := context.WithCancel(context.Background())
+		defer cancelStats()
 		statsCollector.Start(ctx)
 		statsStore.Start()
 
@@ -118,7 +120,7 @@ var stressCmd = &cobra.Command{
 		var totalErrors int64
 		var totalBytes int64
 		var totalLatencyUs int64
-		var minLatency int64 = 1<<62 - 1
+		var minLatency int64 = math.MaxInt64
 		var maxLatency int64
 
 		var wg sync.WaitGroup
@@ -167,8 +169,14 @@ var stressCmd = &cobra.Command{
 							atomic.AddInt64(&totalErrors, 1)
 							continue
 						}
-						n, _ := io.Copy(io.Discard, resp.Body)
-						resp.Body.Close()
+						n, err := io.Copy(io.Discard, resp.Body)
+						if closeErr := resp.Body.Close(); closeErr != nil && err == nil {
+							err = closeErr
+						}
+						if err != nil {
+							atomic.AddInt64(&totalErrors, 1)
+							continue
+						}
 						latency := time.Since(reqStart).Microseconds()
 
 						atomic.AddInt64(&totalRequests, 1)
@@ -227,13 +235,14 @@ var stressCmd = &cobra.Command{
 
 		logger.Info("shutting down server")
 
-		cancelStats()
 		statsCollector.Stop()
 		statsStore.Stop()
 
 		shutdownCtx, cancelShutdown := context.WithTimeout(context.Background(), 5*time.Second)
-		s.Shutdown(shutdownCtx)
-		cancelShutdown()
+		defer cancelShutdown()
+		if err := s.Shutdown(shutdownCtx); err != nil {
+			logger.Error("server shutdown error", slog.String("error", err.Error()))
+		}
 
 		return nil
 	},

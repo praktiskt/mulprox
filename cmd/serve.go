@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -52,12 +53,16 @@ var serveCmd = &cobra.Command{
 		mullvadProvider := mullvad.New()
 		statsStore := stats.NewInMemoryStore(logger)
 		cfg := stats.DefaultConfig()
-		if os.Getenv("FAST_HEALTH_CHECK") != "" {
-			cfg.FastHealthCheck = os.Getenv("FAST_HEALTH_CHECK") == "true"
+		if v := os.Getenv("FAST_HEALTH_CHECK"); v != "" {
+			b, err := strconv.ParseBool(v)
+			if err == nil {
+				cfg.FastHealthCheck = b
+			}
 		}
 		statsCollector := stats.NewCollector(logger, statsStore, mullvadProvider, cfg)
 
 		ctx, cancelStats := context.WithCancel(context.Background())
+		defer cancelStats()
 		statsStore.Start()
 
 		var proxyHandler *proxy.Handler
@@ -135,13 +140,14 @@ var serveCmd = &cobra.Command{
 
 		logger.Info("shutting down server")
 
-		cancelStats()
 		statsCollector.Stop()
 		statsStore.Stop()
 
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		s.Shutdown(shutdownCtx)
-		cancel()
+		defer cancel()
+		if err := s.Shutdown(shutdownCtx); err != nil {
+			logger.Error("server shutdown error", slog.String("error", err.Error()))
+		}
 
 		return nil
 	},

@@ -11,7 +11,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-	"syscall"
 	"time"
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
@@ -25,7 +24,7 @@ const (
 	maxTransportCacheSize = 50
 )
 
-var indexResponse = []byte("Mullvad Proxy Server\nUsage: Set HTTP_PROXY environment variable to point to this server")
+const indexResponse = "Mullvad Proxy Server\nUsage: Set HTTP_PROXY environment variable to point to this server"
 
 type roundTripResult struct {
 	resp     *http.Response
@@ -132,7 +131,7 @@ func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if targetURL == "/" && r.Method == http.MethodGet {
 		w.Header().Set("Content-Type", "text/plain")
-		w.Write(indexResponse)
+		w.Write([]byte(indexResponse))
 		return
 	}
 
@@ -153,16 +152,38 @@ func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 // The upstream connection + header phase is bounded by Transport-level timeouts;
 // body streaming uses parentCtx (cancels only on client disconnect).
 func (h *Handler) proxyHTTP(parentCtx context.Context, w http.ResponseWriter, r *http.Request, targetURL string) {
-	body, err := h.readBody(r)
+	bodyBuf, err := h.readBody(r)
 	if err != nil {
+		if errors.Is(err, errBodyTooLarge) {
+			// Body too large to buffer: stream without retries.
+			result := h.roundTrip(parentCtx, r, targetURL, r.Body, r.ContentLength)
+			if result.err != nil {
+				h.logAndRespond(w, result.remoteID, result.err, false)
+				return
+			}
+			defer result.resp.Body.Close()
+			h.writeResponse(w, result.resp, result.remoteID, result.sent)
+			return
+		}
 		http.Error(w, "failed to read request body", http.StatusBadRequest)
 		return
+	}
+
+	var reqBody io.Reader
+	var bodyLen int64
+	if bodyBuf != nil {
+		reqBody = bytes.NewReader(bodyBuf)
+		bodyLen = int64(len(bodyBuf))
 	}
 
 	var lastResult *roundTripResult
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		result := h.roundTrip(parentCtx, r, targetURL, body)
+		if bodyBuf != nil {
+			// Reset reader for retry.
+			reqBody = bytes.NewReader(bodyBuf)
+		}
+		result := h.roundTrip(parentCtx, r, targetURL, reqBody, bodyLen)
 
 		if result.err != nil {
 			if result.resp != nil && result.resp.Body != nil {
@@ -189,7 +210,7 @@ func (h *Handler) proxyHTTP(parentCtx context.Context, w http.ResponseWriter, r 
 
 // roundTrip performs a single proxy attempt: resolves a SOCKS5 server, builds
 // a transport, and executes the request.
-func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL string, body []byte) *roundTripResult {
+func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL string, body io.Reader, bodyLen int64) *roundTripResult {
 	var tr *http.Transport
 	var remoteID string
 
@@ -232,20 +253,21 @@ func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL stri
 		}
 	}
 
-	var reqBody io.Reader
-	if body != nil {
-		reqBody = bytes.NewReader(body)
-	}
-
-	req, err := http.NewRequestWithContext(ctx, r.Method, targetURL, reqBody)
+	req, err := http.NewRequestWithContext(ctx, r.Method, targetURL, body)
 	if err != nil {
 		return &roundTripResult{remoteID: remoteID, err: err}
 	}
 	for key, values := range r.Header {
 		req.Header[key] = values
 	}
+	req.ContentLength = r.ContentLength
+	req.TransferEncoding = append([]string(nil), r.TransferEncoding...)
+	req.Close = r.Close
+	for k, v := range r.Trailer {
+		req.Trailer[k] = v
+	}
 
-	sent := httpRequestSize(req, len(body))
+	sent := httpRequestSize(req, bodyLen)
 
 	resp, err := tr.RoundTrip(req)
 	if err != nil {
@@ -256,7 +278,7 @@ func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL stri
 
 // httpRequestSize returns the approximate number of bytes the HTTP request
 // will write on the wire (request line + headers + body).
-func httpRequestSize(req *http.Request, bodyLen int) int64 {
+func httpRequestSize(req *http.Request, bodyLen int64) int64 {
 	// Request line: METHOD SP REQUEST_URI PROTO\r\n
 	size := int64(len(req.Method)) + 1 + int64(len(req.URL.RequestURI())) + 1 + int64(len(req.Proto)) + 2
 	// Headers
@@ -268,7 +290,7 @@ func httpRequestSize(req *http.Request, bodyLen int) int64 {
 	// Blank line
 	size += 2
 	// Body
-	size += int64(bodyLen)
+	size += bodyLen
 	return size
 }
 
@@ -300,6 +322,9 @@ func (c *countingWriter) Flush() {
 		c.stats.RecordBytes(c.remoteID, 0, c.pending)
 		c.pending = 0
 	}
+	if f, ok := c.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
 }
 
 // writeResponse copies the upstream response to the client and records stats.
@@ -321,7 +346,9 @@ func (h *Handler) writeResponse(w http.ResponseWriter, resp *http.Response, remo
 
 	buf := util.BufferPool.Get().([]byte)
 	defer util.BufferPool.Put(buf)
-	_, _ = io.CopyBuffer(cw, resp.Body, buf)
+	if _, err := io.CopyBuffer(cw, resp.Body, buf); err != nil {
+		h.logger.Debug("error copying response body", slog.String("error", err.Error()))
+	}
 	cw.Flush()
 }
 
@@ -340,8 +367,14 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	hij, ok := w.(http.Hijacker)
+	if !ok {
+		http.Error(w, "hijack not supported", http.StatusInternalServerError)
+		return
+	}
+
 	if strings.HasPrefix(h.upstreamSOCKS5, "direct://") {
-		h.handleConnectDirect(w, r, host)
+		h.handleConnectDirect(w, r, host, hij)
 		return
 	}
 
@@ -387,26 +420,25 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		w.Header().Set("Connection", "Keep-Alive")
-		w.WriteHeader(http.StatusOK)
+		clientConn, _, err := hij.Hijack()
+		if err != nil {
+			cancel()
+			targetConn.Close()
+			h.logger.Debug("failed to hijack connection, retrying", slog.String("error", err.Error()))
+			lastErr = err
+			lastRemoteID = remoteID
+			continue
+		}
+		cancel()
 
 		if h.stats != nil && remoteID != "" {
 			h.stats.RecordRequest(remoteID)
 		}
 
-		hij, ok := w.(http.Hijacker)
-		if !ok {
-			cancel()
+		if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
+			clientConn.Close()
 			targetConn.Close()
-			http.Error(w, "hijack not supported", http.StatusInternalServerError)
-			return
-		}
-
-		clientConn, _, err := hij.Hijack()
-		cancel() // Release context after hijack
-		if err != nil {
-			targetConn.Close()
-			h.logger.Debug("failed to hijack connection, retrying", slog.String("error", err.Error()))
+			h.logger.Debug("failed to write connect response, retrying", slog.String("error", err.Error()))
 			lastErr = err
 			lastRemoteID = remoteID
 			continue
@@ -427,7 +459,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 // handleConnectDirect handles CONNECT when upstreamSOCKS5 uses direct:// prefix.
 // It skips Mullvad and dials the upstream SOCKS5 proxy directly.
-func (h *Handler) handleConnectDirect(w http.ResponseWriter, r *http.Request, host string) {
+func (h *Handler) handleConnectDirect(w http.ResponseWriter, r *http.Request, host string, hij http.Hijacker) {
 	upstream := strings.TrimPrefix(h.upstreamSOCKS5, "direct://")
 	remoteID := upstream
 
@@ -446,24 +478,22 @@ func (h *Handler) handleConnectDirect(w http.ResponseWriter, r *http.Request, ho
 			continue
 		}
 
-		w.Header().Set("Connection", "Keep-Alive")
-		w.WriteHeader(http.StatusOK)
+		clientConn, _, err := hij.Hijack()
+		if err != nil {
+			targetConn.Close()
+			h.logger.Debug("failed to hijack connection, retrying", slog.String("error", err.Error()))
+			lastErr = err
+			continue
+		}
 
 		if h.stats != nil && remoteID != "" {
 			h.stats.RecordRequest(remoteID)
 		}
 
-		hij, ok := w.(http.Hijacker)
-		if !ok {
+		if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
+			clientConn.Close()
 			targetConn.Close()
-			http.Error(w, "hijack not supported", http.StatusInternalServerError)
-			return
-		}
-
-		clientConn, _, err := hij.Hijack()
-		if err != nil {
-			targetConn.Close()
-			h.logger.Debug("failed to hijack connection, retrying", slog.String("error", err.Error()))
+			h.logger.Debug("failed to write connect response, retrying", slog.String("error", err.Error()))
 			lastErr = err
 			continue
 		}
@@ -497,7 +527,7 @@ func (h *Handler) handleConnectDirect(w http.ResponseWriter, r *http.Request, ho
 //
 // Parameter keys are case-insensitive.
 func (h *Handler) resolveSOCKS5(ctx context.Context, r *http.Request) (addr, remoteID string, err error) {
-	filter := h.baseFilter
+	filter := h.baseFilter.Clone()
 
 	if v := r.Header.Get("Proxy-Authorization"); v != "" {
 		auth, err := parseProxyAuthHeader(v)
@@ -571,7 +601,21 @@ func (h *Handler) getTransport(key string) *http.Transport {
 func (h *Handler) createAndCacheTransport(key string, dialer proxy.Dialer) *http.Transport {
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-			return dialer.Dial(network, addr)
+			type result struct {
+				conn net.Conn
+				err  error
+			}
+			done := make(chan result, 1)
+			go func() {
+				conn, err := dialer.Dial(network, addr)
+				done <- result{conn, err}
+			}()
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case r := <-done:
+				return r.conn, r.err
+			}
 		},
 		TLSHandshakeTimeout:   5 * time.Second,
 		ResponseHeaderTimeout: 5 * time.Second,
@@ -586,12 +630,26 @@ func (h *Handler) createAndCacheTransport(key string, dialer proxy.Dialer) *http
 	return tr
 }
 
+const maxBodySize = 10 * 1024 * 1024 // 10MB
+
+var errBodyTooLarge = errors.New("request body too large")
+
 // readBody buffers the request body so it can be replayed across retries.
+// If the body exceeds maxBodySize, it returns errBodyTooLarge so the caller
+// can stream without retrying.
 func (h *Handler) readBody(r *http.Request) ([]byte, error) {
 	if r.Body == nil || r.Body == http.NoBody {
 		return nil, nil
 	}
-	return io.ReadAll(r.Body)
+	limited := io.LimitReader(r.Body, maxBodySize+1)
+	body, err := io.ReadAll(limited)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(body)) > maxBodySize {
+		return nil, errBodyTooLarge
+	}
+	return body, nil
 }
 
 // logAndRespond logs a proxy error, records stats, and writes a 502 response.
@@ -618,17 +676,15 @@ func (h *Handler) logAndRespond(w http.ResponseWriter, remoteID string, err erro
 // isRetryable reports whether the error is likely transient and the request
 // should be tried again with a fresh connection.
 func isRetryable(err error) bool {
+	if err == nil {
+		return false
+	}
 	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
 		return true
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
-		return true
-	}
-	if errors.Is(err, syscall.ECONNRESET) ||
-		errors.Is(err, syscall.ECONNABORTED) ||
-		errors.Is(err, syscall.EPIPE) {
-		return true
+		return netErr.Timeout() || netErr.Temporary()
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return true
