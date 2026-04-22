@@ -246,23 +246,34 @@ func httpRequestSize(req *http.Request, bodyLen int) int64 {
 	return size
 }
 
+const statsBatchThreshold = 256 * 1024
+
 type countingWriter struct {
 	http.ResponseWriter
 	remoteID string
 	stats    stats.Store
-	lastSent int64
+	sent     int64
+	pending  int64
 }
 
 func (c *countingWriter) Write(p []byte) (int, error) {
 	n, err := c.ResponseWriter.Write(p)
 	if c.stats != nil && c.remoteID != "" && n > 0 {
-		delta := int64(n) - c.lastSent
-		if delta > 0 {
-			c.stats.RecordBytes(c.remoteID, 0, delta)
-			c.lastSent += delta
+		c.sent += int64(n)
+		c.pending += int64(n)
+		if c.pending >= statsBatchThreshold {
+			c.stats.RecordBytes(c.remoteID, 0, c.pending)
+			c.pending = 0
 		}
 	}
 	return n, err
+}
+
+func (c *countingWriter) Flush() {
+	if c.stats != nil && c.remoteID != "" && c.pending > 0 {
+		c.stats.RecordBytes(c.remoteID, 0, c.pending)
+		c.pending = 0
+	}
 }
 
 // writeResponse copies the upstream response to the client and records stats.
@@ -287,6 +298,7 @@ func (h *Handler) writeResponse(w http.ResponseWriter, resp *http.Response, remo
 	buf := bufferPool.Get().([]byte)
 	defer bufferPool.Put(buf)
 	_, _ = io.CopyBuffer(cw, resp.Body, buf)
+	cw.Flush()
 }
 
 // handleConnect handles CONNECT requests by tunneling bytes between client
@@ -550,7 +562,7 @@ func (h *Handler) createAndCacheTransport(socksAddr string, dialer proxy.Dialer)
 
 // readBody buffers the request body so it can be replayed across retries.
 func (h *Handler) readBody(r *http.Request) ([]byte, error) {
-	if r.Body == nil {
+	if r.Body == nil || r.Body == http.NoBody {
 		return nil, nil
 	}
 	return io.ReadAll(r.Body)

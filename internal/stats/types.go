@@ -84,44 +84,53 @@ func DefaultConfig() Config {
 }
 
 type RemoteStore struct {
-	remotes sync.Map
+	mu      sync.RWMutex
+	remotes map[string]*RemoteStats
 }
 
 func NewRemoteStore() *RemoteStore {
-	return &RemoteStore{}
+	return &RemoteStore{
+		remotes: make(map[string]*RemoteStats),
+	}
 }
 
 func (s *RemoteStore) GetOrCreate(remoteID string) *RemoteStats {
-	if stats, ok := s.remotes.Load(remoteID); ok {
-		return stats.(*RemoteStats)
+	s.mu.RLock()
+	if stats, ok := s.remotes[remoteID]; ok {
+		s.mu.RUnlock()
+		return stats
 	}
+	s.mu.RUnlock()
 
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if stats, ok := s.remotes[remoteID]; ok {
+		return stats
+	}
 	stats := &RemoteStats{
 		RemoteID:  remoteID,
 		CreatedAt: time.Now(),
 	}
-	actual, loaded := s.remotes.LoadOrStore(remoteID, stats)
-	if loaded {
-		return actual.(*RemoteStats)
-	}
+	s.remotes[remoteID] = stats
 	return stats
 }
 
 func (s *RemoteStore) GetAll() []*RemoteStats {
-	result := make([]*RemoteStats, 0, 64)
-	s.remotes.Range(func(key, value interface{}) bool {
-		result = append(result, value.(*RemoteStats))
-		return true
-	})
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	result := make([]*RemoteStats, 0, len(s.remotes))
+	for _, v := range s.remotes {
+		result = append(result, v)
+	}
 	return result
 }
 
 func (s *RemoteStore) GetAggregated() AggregatedStats {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 	var agg AggregatedStats
-	agg.RequestsPerRemote = make(map[string]uint64)
-
-	s.remotes.Range(func(key, value interface{}) bool {
-		rs := value.(*RemoteStats)
+	agg.RequestsPerRemote = make(map[string]uint64, len(s.remotes))
+	for _, rs := range s.remotes {
 		reqCount := rs.RequestCount.Load()
 		bytesSent := rs.BytesSent.Load()
 		bytesRecv := rs.BytesRecv.Load()
@@ -137,9 +146,7 @@ func (s *RemoteStore) GetAggregated() AggregatedStats {
 			agg.OnlineRemotes++
 		}
 		agg.RequestsPerRemote[rs.RemoteID] = reqCount
-		return true
-	})
-
+	}
 	return agg
 }
 
