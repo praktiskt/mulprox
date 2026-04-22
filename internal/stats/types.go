@@ -125,6 +125,15 @@ func (s *RemoteStore) GetAll() []*RemoteStats {
 	return result
 }
 
+func (s *RemoteStore) PeekHealth(remoteID string) (RemoteHealth, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if stats, ok := s.remotes[remoteID]; ok {
+		return stats.Health, true
+	}
+	return RemoteHealth{}, false
+}
+
 func (s *RemoteStore) GetAggregated() AggregatedStats {
 	s.mu.RLock()
 	defer s.mu.RUnlock()

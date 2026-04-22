@@ -38,15 +38,19 @@ func NewLRUCacheWithEvict[V any](maxEntries int, onEvict func(V)) *LRUCache[V] {
 }
 
 func (c *LRUCache[V]) Get(key string) (V, bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	c.mu.RLock()
+	elem, ok := c.entries[key]
+	c.mu.RUnlock()
 
-	if elem, ok := c.entries[key]; ok {
-		c.list.MoveToFront(elem)
-		return elem.Value.(*CacheEntry[V]).Value, true
+	if !ok {
+		var zero V
+		return zero, false
 	}
-	var zero V
-	return zero, false
+
+	c.mu.Lock()
+	c.list.MoveToFront(elem)
+	c.mu.Unlock()
+	return elem.Value.(*CacheEntry[V]).Value, true
 }
 
 func (c *LRUCache[V]) Set(key string, value V) {

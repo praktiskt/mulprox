@@ -278,10 +278,8 @@ func (c *countingWriter) Flush() {
 
 // writeResponse copies the upstream response to the client and records stats.
 func (h *Handler) writeResponse(w http.ResponseWriter, resp *http.Response, remoteID string, sentBytes int64) {
-	for key, values := range resp.Header {
-		for _, value := range values {
-			w.Header().Add(key, value)
-		}
+	for k, v := range resp.Header {
+		w.Header()[k] = v
 	}
 
 	cw := &countingWriter{
@@ -485,8 +483,8 @@ func (h *Handler) resolveSOCKS5(ctx context.Context, r *http.Request) (addr, rem
 		if h.stats == nil {
 			return true
 		}
-		stats := h.stats.GetRemoteStats(hostname)
-		return stats == nil || stats.IsOnline()
+		health, ok := h.stats.PeekHealth(hostname)
+		return !ok || health.Online
 	}
 
 	server, err := h.mullvad.GetFilteredServerWithHealth(ctx, filter, isOnline)

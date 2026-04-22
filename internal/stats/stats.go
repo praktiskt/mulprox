@@ -32,6 +32,7 @@ type Store interface {
 	GetRemoteStats(remoteID string) *RemoteStats
 	GetAllRemoteStats() []*RemoteStats
 	GetAggregatedStats() AggregatedStats
+	PeekHealth(remoteID string) (RemoteHealth, bool)
 }
 
 type pendingUpdate struct {
@@ -350,6 +351,10 @@ func (s *InMemoryStore) SetRemoteHealth(remoteID string, health RemoteHealth) {
 
 func (s *InMemoryStore) GetRemoteStats(remoteID string) *RemoteStats {
 	return s.RemoteStore.GetOrCreate(remoteID)
+}
+
+func (s *InMemoryStore) PeekHealth(remoteID string) (RemoteHealth, bool) {
+	return s.RemoteStore.PeekHealth(remoteID)
 }
 
 func (s *InMemoryStore) GetAllRemoteStats() []*RemoteStats {
