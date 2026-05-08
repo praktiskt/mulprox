@@ -438,10 +438,13 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
 			clientConn.Close()
 			targetConn.Close()
-			h.logger.Debug("failed to write connect response, retrying", slog.String("error", err.Error()))
-			lastErr = err
-			lastRemoteID = remoteID
-			continue
+			h.logger.Error("CONNECT failed after hijack",
+				slog.String("error", err.Error()),
+				slog.String("remote", remoteID))
+			if h.stats != nil && remoteID != "" {
+				h.stats.RecordError(remoteID)
+			}
+			return
 		}
 
 		util.Tunnel(clientConn, targetConn, remoteID, h.stats, h.logger)
@@ -493,9 +496,13 @@ func (h *Handler) handleConnectDirect(w http.ResponseWriter, r *http.Request, ho
 		if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
 			clientConn.Close()
 			targetConn.Close()
-			h.logger.Debug("failed to write connect response, retrying", slog.String("error", err.Error()))
-			lastErr = err
-			continue
+			h.logger.Error("CONNECT direct failed after hijack",
+				slog.String("error", err.Error()),
+				slog.String("remote", remoteID))
+			if h.stats != nil && remoteID != "" {
+				h.stats.RecordError(remoteID)
+			}
+			return
 		}
 
 		util.Tunnel(clientConn, targetConn, remoteID, h.stats, h.logger)

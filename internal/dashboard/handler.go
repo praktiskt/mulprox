@@ -1,6 +1,7 @@
 package dashboard
 
 import (
+	"bytes"
 	"encoding/json"
 	"net/http"
 	"sort"
@@ -68,9 +69,14 @@ func (h *Handler) serveProxies(w http.ResponseWriter, r *http.Request) {
 		IsSorting: isSorting,
 	}
 
-	if err := ProxiesTableTemplate.Execute(w, data); err != nil {
+	var buf bytes.Buffer
+	if err := ProxiesTableTemplate.Execute(&buf, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write(buf.Bytes())
 }
 
 func compareRemotes(a, b *stats.RemoteStats, field string) int {
@@ -176,17 +182,26 @@ func (h *Handler) serveDashboard(w http.ResponseWriter, _ *http.Request) {
 	data := Data{
 		Aggregated: h.store.GetAggregatedStats(),
 	}
-	if err := DashboardTemplate.Execute(w, data); err != nil {
+	var buf bytes.Buffer
+	if err := DashboardTemplate.Execute(&buf, data); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.WriteHeader(http.StatusOK)
+	w.Write(buf.Bytes())
 }
 
 func (h *Handler) serveStats(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
 	agg := h.store.GetAggregatedStats()
-	if err := json.NewEncoder(w).Encode(agg); err != nil {
+	var buf bytes.Buffer
+	if err := json.NewEncoder(&buf).Encode(agg); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	w.Write(buf.Bytes())
 }
 
 type ProxiesData struct {
