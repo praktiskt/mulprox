@@ -99,7 +99,7 @@ func NewWithUpstream(logger *slog.Logger, timeout time.Duration, mullvad mullvad
 	}
 }
 
-// ServeHTTP dispatches to CONNECT tunneling or regular HTTP proxying.
+// ServeHTTP routes to CONNECT tunnel or HTTP proxy.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.logger.Debug("proxy handler received",
 		slog.String("method", r.Method),
@@ -120,7 +120,6 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.handleHTTP(w, r)
 }
 
-// handleHTTP proxies a regular HTTP request.
 func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	targetURL := r.URL.String()
 
@@ -148,14 +147,11 @@ func (h *Handler) handleHTTP(w http.ResponseWriter, r *http.Request) {
 	h.proxyHTTP(r.Context(), w, r, targetURL)
 }
 
-// proxyHTTP performs the HTTP proxy request with retries on transient errors.
-// The upstream connection + header phase is bounded by Transport-level timeouts;
-// body streaming uses parentCtx (cancels only on client disconnect).
+// proxyHTTP retries on transient errors; <=10MB body buffered for replay.
 func (h *Handler) proxyHTTP(parentCtx context.Context, w http.ResponseWriter, r *http.Request, targetURL string) {
 	bodyBuf, err := h.readBody(r)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
-			// Body too large to buffer: stream without retries.
 			result := h.roundTrip(parentCtx, r, targetURL, r.Body, r.ContentLength)
 			if result.err != nil {
 				h.logAndRespond(w, result.remoteID, result.err, false)
@@ -180,7 +176,6 @@ func (h *Handler) proxyHTTP(parentCtx context.Context, w http.ResponseWriter, r 
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if bodyBuf != nil {
-			// Reset reader for retry.
 			reqBody = bytes.NewReader(bodyBuf)
 		}
 		result := h.roundTrip(parentCtx, r, targetURL, reqBody, bodyLen)
@@ -208,8 +203,7 @@ func (h *Handler) proxyHTTP(parentCtx context.Context, w http.ResponseWriter, r 
 	h.logAndRespond(w, lastResult.remoteID, lastResult.err, false)
 }
 
-// roundTrip performs a single proxy attempt: resolves a SOCKS5 server, builds
-// a transport, and executes the request.
+// roundTrip: resolve SOCKS5 -> build transport -> execute request.
 func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL string, body io.Reader, bodyLen int64) *roundTripResult {
 	var tr *http.Transport
 	var remoteID string
@@ -276,8 +270,7 @@ func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL stri
 	return &roundTripResult{resp: resp, remoteID: remoteID, sent: sent}
 }
 
-// httpRequestSize returns the approximate number of bytes the HTTP request
-// will write on the wire (request line + headers + body).
+// httpRequestSize estimates wire bytes (line + headers + body).
 func httpRequestSize(req *http.Request, bodyLen int64) int64 {
 	// Request line: METHOD SP REQUEST_URI PROTO\r\n
 	size := int64(len(req.Method)) + 1 + int64(len(req.URL.RequestURI())) + 1 + int64(len(req.Proto)) + 2
@@ -327,7 +320,7 @@ func (c *countingWriter) Flush() {
 	}
 }
 
-// writeResponse copies the upstream response to the client and records stats.
+// writeResponse copies upstream response to client, records stats.
 func (h *Handler) writeResponse(w http.ResponseWriter, resp *http.Response, remoteID string, sentBytes int64) {
 	for k, v := range resp.Header {
 		w.Header()[k] = v
@@ -352,9 +345,7 @@ func (h *Handler) writeResponse(w http.ResponseWriter, resp *http.Response, remo
 	cw.Flush()
 }
 
-// handleConnect handles CONNECT requests by tunneling bytes between client
-// and the upstream SOCKS5 target.
-// It retries on transient errors with a fresh Mullvad server each attempt.
+// handleConnect tunnels via SOCKS5; retries on transient errors.
 func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	host := r.Host
 	if host == "" {
@@ -460,8 +451,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "failed to reach target", http.StatusBadGateway)
 }
 
-// handleConnectDirect handles CONNECT when upstreamSOCKS5 uses direct:// prefix.
-// It skips Mullvad and dials the upstream SOCKS5 proxy directly.
+// handleConnectDirect bypasses Mullvad, dials upstream SOCKS5 directly.
 func (h *Handler) handleConnectDirect(w http.ResponseWriter, r *http.Request, host string, hij http.Hijacker) {
 	upstream := strings.TrimPrefix(h.upstreamSOCKS5, "direct://")
 	remoteID := upstream
@@ -518,21 +508,6 @@ func (h *Handler) handleConnectDirect(w http.ResponseWriter, r *http.Request, ho
 	http.Error(w, "failed to reach target", http.StatusBadGateway)
 }
 
-
-
-// resolveSOCKS5 picks a Mullvad SOCKS5 server based on the request's
-// Proxy-Authorization header and returns its address and identifier.
-// It skips servers that are offline according to health checks.
-//
-// The header is expected to be in the format:
-//
-//	Proxy-Authorization: Basic <base64(connection-string)>
-//
-// where the connection string is comma-separated key=value pairs, e.g.:
-//
-//	seed=123,country=Stockholm
-//
-// Parameter keys are case-insensitive.
 func (h *Handler) resolveSOCKS5(ctx context.Context, r *http.Request) (addr, remoteID string, err error) {
 	filter := h.baseFilter.Clone()
 
@@ -573,11 +548,8 @@ func (h *Handler) resolveSOCKS5(ctx context.Context, r *http.Request) (addr, rem
 	return fmt.Sprintf("%s:%d", server.SOCKS5, server.SOCKSPort), server.Hostname, nil
 }
 
-// parseProxyAuthHeader parses the Proxy-Authorization header value.
-// It supports the "Basic <base64>" format where the decoded value is a
-// connection string (comma-separated key=value pairs).
+// parseProxyAuthHeader decodes "Basic <base64>" header into ProxyAuth.
 func parseProxyAuthHeader(header string) (*ProxyAuth, error) {
-	// Expect "Basic <base64>"
 	const prefix = "Basic "
 	if !strings.HasPrefix(header, prefix) {
 		return nil, fmt.Errorf("expected Basic auth, got: %q", header[:min(len(header), 20)])
@@ -590,13 +562,11 @@ func parseProxyAuthHeader(header string) (*ProxyAuth, error) {
 	}
 
 	connStr := string(decoded)
-	// Trim trailing colon if present (empty password in URL userinfo format)
 	connStr = strings.TrimSuffix(connStr, ":")
 
 	return ParseProxyAuth(connStr)
 }
 
-// getTransport returns a cached http.Transport for the given cache key.
 func (h *Handler) getTransport(key string) *http.Transport {
 	if tr, ok := h.transportCache.Get(key); ok {
 		return tr
@@ -604,7 +574,7 @@ func (h *Handler) getTransport(key string) *http.Transport {
 	return nil
 }
 
-// createAndCacheTransport builds and caches a new http.Transport for the given cache key.
+// createAndCacheTransport creates http.Transport with SOCKS5 dialer, caches in LRU.
 func (h *Handler) createAndCacheTransport(key string, dialer proxy.Dialer) *http.Transport {
 	tr := &http.Transport{
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
@@ -641,9 +611,6 @@ const maxBodySize = 10 * 1024 * 1024 // 10MB
 
 var errBodyTooLarge = errors.New("request body too large")
 
-// readBody buffers the request body so it can be replayed across retries.
-// If the body exceeds maxBodySize, it returns errBodyTooLarge so the caller
-// can stream without retrying.
 func (h *Handler) readBody(r *http.Request) ([]byte, error) {
 	if r.Body == nil || r.Body == http.NoBody {
 		return nil, nil
@@ -659,8 +626,6 @@ func (h *Handler) readBody(r *http.Request) ([]byte, error) {
 	return body, nil
 }
 
-// logAndRespond logs a proxy error, records stats, and writes a 502 response.
-// If markUnhealthy is true, the proxy is also marked as offline.
 func (h *Handler) logAndRespond(w http.ResponseWriter, remoteID string, err error, markUnhealthy bool) {
 	h.logger.Error("proxy request failed", slog.String("error", err.Error()))
 	if h.stats != nil && remoteID != "" {
@@ -680,8 +645,6 @@ func (h *Handler) logAndRespond(w http.ResponseWriter, remoteID string, err erro
 	http.Error(w, "failed to reach target", http.StatusBadGateway)
 }
 
-// isRetryable reports whether the error is likely transient and the request
-// should be tried again with a fresh connection.
 func isRetryable(err error) bool {
 	if err == nil {
 		return false

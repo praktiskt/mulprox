@@ -12,8 +12,10 @@ import (
 //go:embed templates/*.html
 var templatesFS embed.FS
 
-var DashboardTemplate *template.Template
-var ProxiesTableTemplate *template.Template
+var (
+	DashboardTemplate    *template.Template
+	ProxiesTableTemplate *template.Template
+)
 
 func init() {
 	funcs := template.FuncMap{
@@ -39,7 +41,7 @@ func init() {
 
 func formatTime(t time.Time) string {
 	if t.IsZero() {
-		return "—"
+		return "-"
 	}
 	return t.Format("15:04:05")
 }

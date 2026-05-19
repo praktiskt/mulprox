@@ -7,19 +7,7 @@ import (
 	"strings"
 )
 
-// ParseProxyAuth parses a connection string into a ProxyAuth struct.
-// The connection string format is: key=value,key=value,...
-// Parameter keys are case-insensitive.
-// Values are URL-decoded to handle spaces and special characters.
-//
-// Supported parameters:
-//   - country (string): Filter by country
-//   - city (string): Filter by city
-//   - seed (int64): Deterministic server selection
-//   - owned (bool): Only Mullvad-owned servers
-//   - provider (string): Filter by hosting provider
-//   - speed (int): Minimum server speed (Mbps)
-//   - multihop (bool): Allow multihop servers
+// ParseProxyAuth parses key=value,key=value,... connection string.
 func ParseProxyAuth(connStr string) (*ProxyAuth, error) {
 	if connStr == "" {
 		return &ProxyAuth{}, nil
@@ -51,7 +39,7 @@ func ParseProxyAuth(connStr string) (*ProxyAuth, error) {
 			lastKey = key
 		}
 
-		// URL-decode the value to handle spaces and special characters
+		// URL-decode value
 		value, err := url.QueryUnescape(rawValue)
 		if err != nil {
 			value = rawValue // use raw value if decoding fails
@@ -101,7 +89,6 @@ func ParseProxyAuth(connStr string) (*ProxyAuth, error) {
 	return auth, nil
 }
 
-// parseBool parses a string as a boolean in a case-insensitive manner.
 func parseBool(s string) (bool, error) {
 	switch strings.ToLower(s) {
 	case "true", "1", "yes":

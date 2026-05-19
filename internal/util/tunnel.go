@@ -10,8 +10,10 @@ import (
 	"github.com/praktiskt/mulprox/internal/stats"
 )
 
-const copyBufSize = 32 * 1024
-const tunnelIdleTimeout = 5 * time.Minute
+const (
+	copyBufSize       = 32 * 1024
+	tunnelIdleTimeout = 5 * time.Minute
+)
 
 var BufferPool = sync.Pool{
 	New: func() any {
@@ -30,8 +32,7 @@ func (c *CountingReader) Read(p []byte) (int, error) {
 	return n, err
 }
 
-// Tunnel copies data bidirectionally between client and target connections
-// and records stats via the provided store.
+// Tunnel copies bidirectionally, records stats.
 func Tunnel(clientConn, targetConn net.Conn, remoteID string, st stats.Store, logger *slog.Logger) {
 	buf1 := BufferPool.Get().([]byte)
 	buf2 := BufferPool.Get().([]byte)

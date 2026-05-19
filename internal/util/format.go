@@ -30,7 +30,7 @@ func FormatBytesUint(n uint64) string {
 
 func FormatLatency(ms float64) string {
 	if ms < 1 {
-		return "—"
+		return "-"
 	}
 	return fmt.Sprintf("%.0fms", ms)
 }

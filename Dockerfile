@@ -8,7 +8,7 @@ ENV LDFLAGS="-s -w -buildid="
 RUN --mount=type=cache,target=/root/.cache/go-build \
     GOOS=linux go build -trimpath -ldflags="$LDFLAGS" -o /dist/app
 
-# This solves C dependencies
+
 RUN ldd /dist/app | tr -s [:blank:] '\n' | grep ^/ | xargs -I % install -D % /dist/%
 RUN ln -s ld-musl-x86_64.so.1 /dist/lib/libc.musl-x86_64.so.1
 

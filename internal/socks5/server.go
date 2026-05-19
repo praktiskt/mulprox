@@ -31,9 +31,9 @@ const (
 	atypDomain = 0x03
 	atypIPv6   = 0x04
 
-	replySuccess      = 0x00
-	replyGeneralFail  = 0x01
-	replyNotAllowed   = 0x02
+	replySuccess        = 0x00
+	replyGeneralFail    = 0x01
+	replyNotAllowed     = 0x02
 	replyNetworkUnreach = 0x03
 	replyHostUnreach    = 0x04
 	replyConnRefused    = 0x05
@@ -277,7 +277,7 @@ func (s *Server) readPasswordAuth(conn net.Conn) (authResult, error) {
 		return authResult{}, fmt.Errorf("read password: %w", err)
 	}
 
-	// Validate: accept any username/password; parse username as filter connection string
+	// Parse username as filter; silently accept invalid strings.
 	if _, err := conn.Write([]byte{0x01, 0x00}); err != nil {
 		return authResult{}, err
 	}
@@ -285,7 +285,7 @@ func (s *Server) readPasswordAuth(conn net.Conn) (authResult, error) {
 	authStr := string(username)
 	filter, err := proxy.ParseProxyAuth(authStr)
 	if err != nil {
-		// Invalid filter string: still accept auth but use no filter
+		// Invalid filter: still accept auth, use no filter
 		s.logger.Debug("invalid SOCKS5 auth filter", slog.String("username", authStr), slog.String("error", err.Error()))
 		return authResult{raw: authStr}, nil
 	}

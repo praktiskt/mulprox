@@ -158,5 +158,3 @@ func (s *RemoteStore) GetAggregated() AggregatedStats {
 	}
 	return agg
 }
-
-

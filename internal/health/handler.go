@@ -20,17 +20,16 @@ func New(store stats.Store) *Handler {
 func (*Handler) Livez(w http.ResponseWriter, _ *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
-	if _, err := 		w.Write([]byte(livezResponse)); err != nil {
-		// Best effort; can't write error after headers sent.
+	if _, err := w.Write([]byte(livezResponse)); err != nil {
 		_ = err
 	}
 }
 
 type readyzResp struct {
-	Status       string `json:"status"`
-	ActiveRemotes int   `json:"active_remotes"`
-	OnlineRemotes int   `json:"online_remotes"`
-	TotalRemotes  int   `json:"total_remotes"`
+	Status        string `json:"status"`
+	ActiveRemotes int    `json:"active_remotes"`
+	OnlineRemotes int    `json:"online_remotes"`
+	TotalRemotes  int    `json:"total_remotes"`
 }
 
 func (h *Handler) Readyz(w http.ResponseWriter, _ *http.Request) {
@@ -53,7 +52,6 @@ func (h *Handler) Readyz(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	if err := json.NewEncoder(w).Encode(resp); err != nil {
-		// Best effort; headers already sent.
 		_ = err
 	}
 }

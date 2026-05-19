@@ -31,7 +31,6 @@ func TestSeedDeterminism(t *testing.T) {
 
 	p := mullvad.New()
 
-	// Fetch server list to verify provider is working
 	servers, err := p.FetchMullvadList(ctx)
 	if err != nil {
 		t.Fatalf("failed to fetch mullvad list: %v", err)
@@ -44,7 +43,6 @@ func TestSeedDeterminism(t *testing.T) {
 	statsStore := stats.NewInMemoryStore(logger)
 	h := proxy.New(logger, 30*time.Second, p, false, statsStore, mullvad.Filter{})
 
-	// Create test server
 	ts := &http.Server{
 		Handler:           h,
 		ReadTimeout:       30 * time.Second,
@@ -53,7 +51,6 @@ func TestSeedDeterminism(t *testing.T) {
 		IdleTimeout:       120 * time.Second,
 	}
 
-	// Start server on random port
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatalf("failed to create listener: %v", err)
@@ -67,15 +64,12 @@ func TestSeedDeterminism(t *testing.T) {
 	}()
 	defer ts.Close()
 
-	// Wait for server to start
 	time.Sleep(100 * time.Millisecond)
 
-	// Helper to create Basic auth header for connection string
 	makeAuthHeader := func(connStr string) string {
 		return "Basic " + base64.StdEncoding.EncodeToString([]byte(connStr))
 	}
 
-	// Helper to fetch exit IP via httpbin with Proxy-Authorization header
 	fetchIP := func(seed string) string {
 		client := &http.Client{
 			Transport: &http.Transport{
@@ -106,7 +100,6 @@ func TestSeedDeterminism(t *testing.T) {
 		return result.Origin
 	}
 
-	// Test same seed returns same IP
 	ip1 := fetchIP("123")
 	ip2 := fetchIP("123")
 	ip3 := fetchIP("123")
@@ -117,7 +110,6 @@ func TestSeedDeterminism(t *testing.T) {
 		t.Logf("seed 123 consistently returns IP: %s", ip1)
 	}
 
-	// Test different seed returns different IP
 	ip4 := fetchIP("456")
 	if ip4 == ip1 {
 		t.Errorf("seed 456 should return different IP than seed 123, both got: %s", ip1)
@@ -511,7 +503,6 @@ func TestMultiHopChaining(t *testing.T) {
 	statsStoreB.Start()
 	defer statsStoreB.Stop()
 
-	// Instance B: SOCKS5 server
 	serverB := socks5.NewServer(logger, 30*time.Second, p, statsStoreB, mullvad.Filter{})
 	if err := serverB.Listen("127.0.0.1:0"); err != nil {
 		t.Fatalf("failed to start SOCKS5 server B: %v", err)
@@ -526,7 +517,6 @@ func TestMultiHopChaining(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Instance A: HTTP proxy with direct upstream pointing to B's SOCKS5
 	proxyA := proxy.NewWithUpstream(logger, 30*time.Second, p, false, statsStoreA, mullvad.Filter{}, "direct://"+serverB.Addr())
 
 	ts := &http.Server{
@@ -552,7 +542,6 @@ func TestMultiHopChaining(t *testing.T) {
 
 	time.Sleep(100 * time.Millisecond)
 
-	// Client uses A as HTTP proxy
 	client := &http.Client{
 		Transport: &http.Transport{
 			Proxy: func(*http.Request) (*url.URL, error) {
@@ -586,7 +575,6 @@ func TestMultiHopChaining(t *testing.T) {
 	}
 	t.Logf("Multi-hop request succeeded, exit IP: %s", result.Origin)
 
-	// Verify request passed through A (stats should show upstream SOCKS5 address)
 	foundA := false
 	for _, r := range statsStoreA.GetAllRemoteStats() {
 		if r.RequestCount.Load() > 0 {
@@ -601,7 +589,6 @@ func TestMultiHopChaining(t *testing.T) {
 		t.Fatal("proxy A did not record any request stats")
 	}
 
-	// Verify request passed through B (stats should show a Mullvad hostname, not localhost)
 	foundB := false
 	for _, r := range statsStoreB.GetAllRemoteStats() {
 		if r.RequestCount.Load() > 0 {

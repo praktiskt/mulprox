@@ -156,7 +156,6 @@ func TestParseProxyAuth(t *testing.T) {
 			if auth.Multihop != tt.expected.Multihop {
 				t.Errorf("multihop: expected %v, got %v", tt.expected.Multihop, auth.Multihop)
 			}
-			// Compare Owned pointers by value
 			if (auth.Owned == nil) != (tt.expected.Owned == nil) {
 				t.Errorf("owned: expected nil=%v, got nil=%v", tt.expected.Owned == nil, auth.Owned == nil)
 			} else if auth.Owned != nil && tt.expected.Owned != nil && *auth.Owned != *tt.expected.Owned {
@@ -254,7 +253,6 @@ func TestParseProxyAuthHeader(t *testing.T) {
 			if auth.Multihop != tt.expected.Multihop {
 				t.Errorf("multihop: expected %v, got %v", tt.expected.Multihop, auth.Multihop)
 			}
-			// Compare Owned pointers by value
 			if (auth.Owned == nil) != (tt.expected.Owned == nil) {
 				t.Errorf("owned: expected nil=%v, got nil=%v", tt.expected.Owned == nil, auth.Owned == nil)
 			} else if auth.Owned != nil && tt.expected.Owned != nil && *auth.Owned != *tt.expected.Owned {
