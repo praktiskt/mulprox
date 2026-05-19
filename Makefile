@@ -1,4 +1,4 @@
-.PHONY: build test test-race e2e run clean docker-build docker-run
+.PHONY: build build-all test test-race e2e run clean docker-build docker-run
 
 LDFLAGS := -s -w -buildid=
 
@@ -17,8 +17,17 @@ e2e:
 run:
 	go run . serve
 
+build-all:
+	@mkdir -p dist
+	GOOS=linux GOARCH=amd64 go build -trimpath -ldflags="$(LDFLAGS)" -o dist/mulprox-linux-amd64 .
+	GOOS=linux GOARCH=arm64 go build -trimpath -ldflags="$(LDFLAGS)" -o dist/mulprox-linux-arm64 .
+	GOOS=darwin GOARCH=amd64 go build -trimpath -ldflags="$(LDFLAGS)" -o dist/mulprox-darwin-amd64 .
+	GOOS=darwin GOARCH=arm64 go build -trimpath -ldflags="$(LDFLAGS)" -o dist/mulprox-darwin-arm64 .
+	GOOS=windows GOARCH=amd64 go build -trimpath -ldflags="$(LDFLAGS)" -o dist/mulprox-windows-amd64.exe .
+	sha256sum dist/* | sed "s/dist\///gi"
+
 clean:
-	rm -f mulprox
+	rm -rf mulprox dist
 
 docker-build:
 	docker build -t mulprox:build .
