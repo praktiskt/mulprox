@@ -1,7 +1,9 @@
 .PHONY: build test test-race e2e run clean docker-build docker-run
 
+LDFLAGS := -s -w -buildid=
+
 build:
-	go build -o mulprox .
+	go build -trimpath -ldflags="$(LDFLAGS)" -o mulprox .
 
 test:
 	go test -v $(shell go list ./... | grep -v /e2e)
