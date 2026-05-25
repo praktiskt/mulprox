@@ -4,6 +4,8 @@
 
 Mullvad HTTP proxy. Per-request IP rotation. SOCKS5 server. Multi-hop chaining.
 
+![dashboard](./dashboard.png)
+
 ## Prerequisites
 
 Be on a machine connected to Mullvad.
