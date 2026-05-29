@@ -170,7 +170,7 @@ func (s *Server) handleConn(clientConn net.Conn) {
 	remoteID := server.Hostname
 	socksAddr := net.JoinHostPort(server.SOCKS5, strconv.Itoa(server.SOCKSPort))
 
-	dialer, err := s.mullvad.SOCKS5DialerFromAddr(socksAddr, s.timeout)
+	dialer, err := s.mullvad.SOCKS5DialerFromAddr(ctx, socksAddr, s.timeout)
 	if err != nil {
 		s.logger.Debug("failed to create SOCKS5 dialer", slog.String("error", err.Error()))
 		s.reply(clientConn, replyGeneralFail, nil)

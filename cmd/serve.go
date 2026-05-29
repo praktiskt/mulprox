@@ -50,7 +50,8 @@ var serveCmd = &cobra.Command{
 			upstreamSOCKS5 = os.Getenv("SOCKS5_PROXY")
 		}
 
-		mullvadProvider := mullvad.New()
+		dnsAddr, _ := cmd.Flags().GetString("dns")
+		mullvadProvider := mullvad.NewWithDNS(dnsAddr)
 		statsStore := stats.NewInMemoryStore(logger)
 		cfg := stats.DefaultConfig()
 		if v := os.Getenv("FAST_HEALTH_CHECK"); v != "" {
@@ -159,6 +160,7 @@ func init() {
 	serveCmd.Flags().Bool("https-only", false, "Reject HTTP requests, only allow HTTPS")
 	serveCmd.Flags().Int("socks5-port", 0, "SOCKS5 server port (0 = disabled)")
 	serveCmd.Flags().String("upstream-socks5", "", "Upstream SOCKS5 proxy address for chaining (also SOCKS5_PROXY env)")
+	serveCmd.Flags().String("dns", "", "DNS server for Mullvad relay resolution (default: 194.242.2.2:853, Mullvad DoT)")
 	registerFilterFlags(serveCmd)
 	rootCmd.AddCommand(serveCmd)
 }

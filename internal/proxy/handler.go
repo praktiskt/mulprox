@@ -233,7 +233,7 @@ func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL stri
 
 		tr = h.getTransport(cacheKey)
 		if tr == nil {
-			socksDialer, err := proxy.SOCKS5("tcp", socksAddr, nil, &net.Dialer{Timeout: h.timeout})
+			socksDialer, err := h.mullvad.SOCKS5DialerFromAddr(ctx, socksAddr, h.timeout)
 			if err != nil {
 				return &roundTripResult{remoteID: remoteID, err: err}
 			}
@@ -383,7 +383,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		dialer, err := h.mullvad.SOCKS5DialerFromAddr(socksAddr, h.timeout)
+		dialer, err := h.mullvad.SOCKS5DialerFromAddr(ctx, socksAddr, h.timeout)
 		if err != nil {
 			cancel()
 			h.logger.Debug("failed to create Mullvad session, retrying", slog.String("error", err.Error()))

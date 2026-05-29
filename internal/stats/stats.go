@@ -656,7 +656,7 @@ func (c *Collector) measureSOCKS5Latency(ctx context.Context, socksHost string, 
 func (c *Collector) measureSOCKS5Health(ctx context.Context, socksHost string, socksPort int) int64 {
 	socksAddr := net.JoinHostPort(socksHost, strconv.Itoa(socksPort))
 
-	dialer, err := c.mullvad.SOCKS5DialerFromAddr(socksAddr, c.config.SOCKSDialTimeout)
+	dialer, err := c.mullvad.SOCKS5DialerFromAddr(ctx, socksAddr, c.config.SOCKSDialTimeout)
 	if err != nil {
 		return 0
 	}
@@ -749,7 +749,7 @@ func (c *Collector) checkEgressIPForServer(ctx context.Context, socksHost string
 	}
 	defer transport.CloseIdleConnections()
 
-	dialer, err := c.mullvad.SOCKS5DialerFromAddr(net.JoinHostPort(socksHost, strconv.Itoa(socksPort)), 10*time.Second)
+	dialer, err := c.mullvad.SOCKS5DialerFromAddr(ctx, net.JoinHostPort(socksHost, strconv.Itoa(socksPort)), 10*time.Second)
 	if err != nil {
 		return
 	}

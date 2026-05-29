@@ -2,6 +2,7 @@ package mullvad
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sardanioss/httpcloak/client"
+	"golang.org/x/net/dns/dnsmessage"
 	"golang.org/x/net/proxy"
 	"golang.org/x/sync/singleflight"
 )
@@ -22,6 +24,8 @@ const (
 	MullvadListURL      = "https://api.mullvad.net/www/relays/all/"
 	MullvadURL          = "https://am.i.mullvad.net/json"
 	MullvadListCacheTTL = 3 * time.Hour
+	DefaultDNSAddr      = "194.242.2.2:853"
+	DefaultDNSSNI       = "dns.mullvad.net"
 )
 
 type Status struct {
@@ -54,17 +58,161 @@ type Provider struct {
 	mullvadStatus atomic.Value
 	httpClient    *client.Client
 	fetchGroup    singleflight.Group
+	dnsAddr       string
 }
 
 func New() *Provider {
+	return NewWithDNS("")
+}
+
+func NewWithDNS(dnsAddr string) *Provider {
+	if dnsAddr == "" {
+		dnsAddr = DefaultDNSAddr
+	}
 	return &Provider{
 		httpClient: client.NewSession("chrome-latest"),
+		dnsAddr:    dnsAddr,
 	}
 }
 
-func (p *Provider) SOCKS5DialerFromAddr(socksAddr string, timeout time.Duration) (proxy.Dialer, error) {
+func (p *Provider) SOCKS5DialerFromAddr(ctx context.Context, socksAddr string, timeout time.Duration) (proxy.Dialer, error) {
+	resolved, err := p.resolveRelayAddr(ctx, socksAddr)
+	if err != nil {
+		return nil, err
+	}
 	fwd := &net.Dialer{Timeout: timeout}
-	return proxy.SOCKS5("tcp", socksAddr, nil, fwd)
+	return proxy.SOCKS5("tcp", resolved, nil, fwd)
+}
+
+func (p *Provider) resolveRelayAddr(ctx context.Context, addr string) (string, error) {
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		return "", err
+	}
+	if net.ParseIP(host) != nil {
+		return addr, nil
+	}
+	ips, err := p.resolve(ctx, host)
+	if err != nil {
+		return "", fmt.Errorf("resolve relay %s: %w", host, err)
+	}
+	var ip net.IP
+	for _, i := range ips {
+		if i.To4() != nil {
+			ip = i
+			break
+		}
+	}
+	if ip == nil && len(ips) > 0 {
+		ip = ips[0]
+	}
+	if ip == nil {
+		return "", fmt.Errorf("no IP for %s", host)
+	}
+	return net.JoinHostPort(ip.String(), port), nil
+}
+
+func (p *Provider) resolve(ctx context.Context, hostname string) ([]net.IP, error) {
+	host, port, _ := net.SplitHostPort(p.dnsAddr)
+	if port == "" {
+		port = "53"
+	}
+	dnsAddr := net.JoinHostPort(host, port)
+	useDoT := port == "853"
+
+	network := "udp"
+	if useDoT {
+		network = "tcp"
+	}
+
+	d := &net.Dialer{}
+	conn, err := d.DialContext(ctx, network, dnsAddr)
+	if err != nil {
+		return nil, fmt.Errorf("dns connect: %w", err)
+	}
+	defer conn.Close()
+
+	if useDoT {
+		sni := host
+		if net.ParseIP(host) != nil {
+			sni = DefaultDNSSNI
+		}
+		tlsConn := tls.Client(conn, &tls.Config{ServerName: sni})
+		if err := tlsConn.HandshakeContext(ctx); err != nil {
+			return nil, fmt.Errorf("dns tls: %w", err)
+		}
+		conn = tlsConn
+	}
+
+	msg := dnsmessage.Message{
+		Header: dnsmessage.Header{
+			ID:               uint16(rand.IntN(65536)),
+			RecursionDesired: true,
+		},
+		Questions: []dnsmessage.Question{
+			{
+				Name:  dnsmessage.MustNewName(hostname + "."),
+				Type:  dnsmessage.TypeA,
+				Class: dnsmessage.ClassINET,
+			},
+		},
+	}
+
+	packed, err := msg.Pack()
+	if err != nil {
+		return nil, fmt.Errorf("dns pack: %w", err)
+	}
+
+	if useDoT {
+		packed = append([]byte{byte(len(packed) >> 8), byte(len(packed))}, packed...)
+	}
+
+	if _, err := conn.Write(packed); err != nil {
+		return nil, fmt.Errorf("dns write: %w", err)
+	}
+
+	var resp []byte
+	if useDoT {
+		lenBuf := make([]byte, 2)
+		if _, err := io.ReadFull(conn, lenBuf); err != nil {
+			return nil, fmt.Errorf("dns read len: %w", err)
+		}
+		rlen := int(lenBuf[0])<<8 | int(lenBuf[1])
+		resp = make([]byte, rlen)
+		if _, err := io.ReadFull(conn, resp); err != nil {
+			return nil, fmt.Errorf("dns read: %w", err)
+		}
+	} else {
+		buf := make([]byte, 1500)
+		n, err := conn.Read(buf)
+		if err != nil {
+			return nil, fmt.Errorf("dns read: %w", err)
+		}
+		resp = buf[:n]
+	}
+
+	var pkt dnsmessage.Message
+	if err := pkt.Unpack(resp); err != nil {
+		return nil, fmt.Errorf("dns unpack: %w", err)
+	}
+
+	if pkt.Header.RCode != dnsmessage.RCodeSuccess {
+		return nil, fmt.Errorf("dns error: %v", pkt.Header.RCode)
+	}
+
+	var ips []net.IP
+	for _, a := range pkt.Answers {
+		switch b := a.Body.(type) {
+		case *dnsmessage.AResource:
+			ips = append(ips, net.IP(b.A[:]))
+		case *dnsmessage.AAAAResource:
+			ips = append(ips, net.IP(b.AAAA[:]))
+		}
+	}
+	if len(ips) == 0 {
+		return nil, fmt.Errorf("no A/AAAA records for %s", hostname)
+	}
+	return ips, nil
 }
 
 type Filter struct {
@@ -81,7 +229,7 @@ type ServerProvider interface {
 	FetchMullvadList(ctx context.Context) ([]Server, error)
 	GetFilteredServer(ctx context.Context, filter Filter) (Server, error)
 	GetFilteredServerWithHealth(ctx context.Context, filter Filter, isOnline func(string) bool) (Server, error)
-	SOCKS5DialerFromAddr(socksAddr string, timeout time.Duration) (proxy.Dialer, error)
+	SOCKS5DialerFromAddr(ctx context.Context, socksAddr string, timeout time.Duration) (proxy.Dialer, error)
 }
 
 func stringInSlice(ss []string, s string) bool {
