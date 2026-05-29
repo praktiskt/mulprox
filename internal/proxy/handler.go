@@ -369,6 +369,12 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	clientConn, _, err := hij.Hijack()
+	if err != nil {
+		h.logger.Debug("client disconnected before hijack", slog.String("error", err.Error()))
+		return
+	}
+
 	var lastErr error
 	var lastRemoteID string
 
@@ -410,16 +416,6 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 			lastRemoteID = remoteID
 			continue
 		}
-
-		clientConn, _, err := hij.Hijack()
-		if err != nil {
-			cancel()
-			targetConn.Close()
-			h.logger.Debug("failed to hijack connection, retrying", slog.String("error", err.Error()))
-			lastErr = err
-			lastRemoteID = remoteID
-			continue
-		}
 		cancel()
 
 		if h.stats != nil && remoteID != "" {
@@ -429,7 +425,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
 			clientConn.Close()
 			targetConn.Close()
-			h.logger.Error("CONNECT failed after hijack",
+			h.logger.Warn("CONNECT failed after hijack",
 				slog.String("error", err.Error()),
 				slog.String("remote", remoteID))
 			if h.stats != nil && remoteID != "" {
@@ -448,13 +444,19 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	if h.stats != nil && lastRemoteID != "" {
 		h.stats.RecordError(lastRemoteID)
 	}
-	http.Error(w, "failed to reach target", http.StatusBadGateway)
+	clientConn.Close()
 }
 
 // handleConnectDirect bypasses Mullvad, dials upstream SOCKS5 directly.
 func (h *Handler) handleConnectDirect(w http.ResponseWriter, r *http.Request, host string, hij http.Hijacker) {
 	upstream := strings.TrimPrefix(h.upstreamSOCKS5, "direct://")
 	remoteID := upstream
+
+	clientConn, _, err := hij.Hijack()
+	if err != nil {
+		h.logger.Debug("client disconnected before hijack", slog.String("error", err.Error()))
+		return
+	}
 
 	var lastErr error
 	for attempt := 0; attempt < maxRetries; attempt++ {
@@ -471,14 +473,6 @@ func (h *Handler) handleConnectDirect(w http.ResponseWriter, r *http.Request, ho
 			continue
 		}
 
-		clientConn, _, err := hij.Hijack()
-		if err != nil {
-			targetConn.Close()
-			h.logger.Debug("failed to hijack connection, retrying", slog.String("error", err.Error()))
-			lastErr = err
-			continue
-		}
-
 		if h.stats != nil && remoteID != "" {
 			h.stats.RecordRequest(remoteID)
 		}
@@ -486,7 +480,7 @@ func (h *Handler) handleConnectDirect(w http.ResponseWriter, r *http.Request, ho
 		if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
 			clientConn.Close()
 			targetConn.Close()
-			h.logger.Error("CONNECT direct failed after hijack",
+			h.logger.Warn("CONNECT direct failed after hijack",
 				slog.String("error", err.Error()),
 				slog.String("remote", remoteID))
 			if h.stats != nil && remoteID != "" {
@@ -505,7 +499,7 @@ func (h *Handler) handleConnectDirect(w http.ResponseWriter, r *http.Request, ho
 	if h.stats != nil && remoteID != "" {
 		h.stats.RecordError(remoteID)
 	}
-	http.Error(w, "failed to reach target", http.StatusBadGateway)
+	clientConn.Close()
 }
 
 func (h *Handler) resolveSOCKS5(ctx context.Context, r *http.Request) (addr, remoteID string, err error) {
