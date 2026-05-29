@@ -373,7 +373,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	var lastRemoteID string
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
-		ctx, cancel := context.WithTimeout(r.Context(), h.timeout)
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), h.timeout)
 		socksAddr, remoteID, err := h.resolveSOCKS5(ctx, r)
 		if err != nil {
 			cancel()
