@@ -64,7 +64,7 @@ func TestSeedDeterminism(t *testing.T) {
 	}()
 	defer ts.Close()
 
-	time.Sleep(100 * time.Millisecond)
+	waitReady(t, listener.Addr().String())
 
 	makeAuthHeader := func(connStr string) string {
 		return "Basic " + base64.StdEncoding.EncodeToString([]byte(connStr))
@@ -81,7 +81,7 @@ func TestSeedDeterminism(t *testing.T) {
 				},
 			},
 		}
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://httpbin.org/ip", nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://am.i.mullvad.net/json", nil)
 		if err != nil {
 			t.Fatalf("failed to create request: %v", err)
 		}
@@ -92,12 +92,12 @@ func TestSeedDeterminism(t *testing.T) {
 		defer resp.Body.Close()
 
 		var result struct {
-			Origin string `json:"origin"`
+			IP string `json:"ip"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			t.Fatalf("failed to decode response: %v", err)
 		}
-		return result.Origin
+		return result.IP
 	}
 
 	ip1 := fetchIP("123")
@@ -153,7 +153,7 @@ func TestHTTPSOnlyMode(t *testing.T) {
 	}()
 	defer ts.Close()
 
-	time.Sleep(100 * time.Millisecond)
+	waitReady(t, listener.Addr().String())
 
 	client := &http.Client{
 		Transport: &http.Transport{
@@ -184,7 +184,7 @@ func TestHTTPSOnlyMode(t *testing.T) {
 		},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, "GET", "https://httpbin.org/ip", nil)
+	req, err := http.NewRequestWithContext(ctx, "GET", "https://am.i.mullvad.net/json", nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
@@ -199,15 +199,15 @@ func TestHTTPSOnlyMode(t *testing.T) {
 	}
 
 	var result struct {
-		Origin string `json:"origin"`
+		IP string `json:"ip"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if result.Origin == "" {
+	if result.IP == "" {
 		t.Error("expected non-empty origin IP from HTTPS request")
 	}
-	t.Logf("HTTPS request succeeded, exit IP: %s", result.Origin)
+	t.Logf("HTTPS request succeeded, exit IP: %s", result.IP)
 }
 
 func TestStatsRecording(t *testing.T) {
@@ -267,7 +267,7 @@ func TestStatsRecording(t *testing.T) {
 	}()
 	defer ts.Close()
 
-	time.Sleep(100 * time.Millisecond)
+	waitReady(t, listener.Addr().String())
 
 	makeAuthHeader := func(connStr string) string {
 		return "Basic " + base64.StdEncoding.EncodeToString([]byte(connStr))
@@ -288,7 +288,7 @@ func TestStatsRecording(t *testing.T) {
 
 	fetchIP := func(seed string) string {
 		client := makeProxyClient(seed)
-		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://httpbin.org/ip", nil)
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://am.i.mullvad.net/json", nil)
 		if err != nil {
 			t.Fatalf("failed to create request: %v", err)
 		}
@@ -299,12 +299,12 @@ func TestStatsRecording(t *testing.T) {
 		defer resp.Body.Close()
 
 		var result struct {
-			Origin string `json:"origin"`
+			IP string `json:"ip"`
 		}
 		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			t.Fatalf("failed to decode response: %v", err)
 		}
-		return result.Origin
+		return result.IP
 	}
 
 	ips := make(map[string]bool)
@@ -321,7 +321,13 @@ func TestStatsRecording(t *testing.T) {
 		t.Fatal("expected at least one IP")
 	}
 
-	time.Sleep(200 * time.Millisecond)
+	deadline := time.Now().Add(10 * time.Second)
+	for time.Now().Before(deadline) {
+		if len(statsStore.GetAllRemoteStats()) > 0 {
+			break
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 
 	remotes := statsStore.GetAllRemoteStats()
 	if len(remotes) == 0 {
@@ -440,7 +446,7 @@ func TestSOCKS5ServerDirect(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	waitSocksReady(t, server.Addr())
 
 	dialer, err := xproxy.SOCKS5("tcp", server.Addr(), nil, &net.Dialer{Timeout: 30 * time.Second})
 	if err != nil {
@@ -455,7 +461,7 @@ func TestSOCKS5ServerDirect(t *testing.T) {
 		},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://httpbin.org/ip", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://am.i.mullvad.net/json", nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
@@ -470,15 +476,15 @@ func TestSOCKS5ServerDirect(t *testing.T) {
 	}
 
 	var result struct {
-		Origin string `json:"origin"`
+		IP string `json:"ip"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if result.Origin == "" {
+	if result.IP == "" {
 		t.Fatal("expected non-empty origin IP")
 	}
-	t.Logf("SOCKS5 direct request succeeded, exit IP: %s", result.Origin)
+	t.Logf("SOCKS5 direct request succeeded, exit IP: %s", result.IP)
 }
 
 func TestMultiHopChaining(t *testing.T) {
@@ -515,7 +521,7 @@ func TestMultiHopChaining(t *testing.T) {
 		}
 	}()
 
-	time.Sleep(100 * time.Millisecond)
+	waitSocksReady(t, serverB.Addr())
 
 	proxyA := proxy.NewWithUpstream(logger, 30*time.Second, p, false, statsStoreA, mullvad.Filter{}, "direct://"+serverB.Addr())
 
@@ -540,7 +546,7 @@ func TestMultiHopChaining(t *testing.T) {
 	}()
 	defer ts.Close()
 
-	time.Sleep(100 * time.Millisecond)
+	waitReady(t, listener.Addr().String())
 
 	client := &http.Client{
 		Transport: &http.Transport{
@@ -550,7 +556,7 @@ func TestMultiHopChaining(t *testing.T) {
 		},
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://httpbin.org/ip", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://am.i.mullvad.net/json", nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
@@ -565,15 +571,15 @@ func TestMultiHopChaining(t *testing.T) {
 	}
 
 	var result struct {
-		Origin string `json:"origin"`
+		IP string `json:"ip"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		t.Fatalf("failed to decode response: %v", err)
 	}
-	if result.Origin == "" {
+	if result.IP == "" {
 		t.Fatal("expected non-empty origin IP")
 	}
-	t.Logf("Multi-hop request succeeded, exit IP: %s", result.Origin)
+	t.Logf("Multi-hop request succeeded, exit IP: %s", result.IP)
 
 	foundA := false
 	for _, r := range statsStoreA.GetAllRemoteStats() {

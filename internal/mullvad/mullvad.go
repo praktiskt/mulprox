@@ -76,7 +76,7 @@ func NewWithDNS(dnsAddr string) *Provider {
 }
 
 func (p *Provider) SOCKS5DialerFromAddr(ctx context.Context, socksAddr string, timeout time.Duration) (proxy.Dialer, error) {
-	resolved, err := p.resolveRelayAddr(ctx, socksAddr)
+	resolved, err := p.ResolveRelayAddr(ctx, socksAddr)
 	if err != nil {
 		return nil, err
 	}
@@ -84,7 +84,12 @@ func (p *Provider) SOCKS5DialerFromAddr(ctx context.Context, socksAddr string, t
 	return proxy.SOCKS5("tcp", resolved, nil, fwd)
 }
 
-func (p *Provider) resolveRelayAddr(ctx context.Context, addr string) (string, error) {
+func (p *Provider) SOCKS5DialerFromResolved(ctx context.Context, resolvedAddr string, timeout time.Duration) (proxy.Dialer, error) {
+	fwd := &net.Dialer{Timeout: timeout}
+	return proxy.SOCKS5("tcp", resolvedAddr, nil, fwd)
+}
+
+func (p *Provider) ResolveRelayAddr(ctx context.Context, addr string) (string, error) {
 	host, port, err := net.SplitHostPort(addr)
 	if err != nil {
 		return "", err
@@ -96,20 +101,23 @@ func (p *Provider) resolveRelayAddr(ctx context.Context, addr string) (string, e
 	if err != nil {
 		return "", fmt.Errorf("resolve relay %s: %w", host, err)
 	}
-	var ip net.IP
-	for _, i := range ips {
-		if i.To4() != nil {
-			ip = i
-			break
-		}
-	}
-	if ip == nil && len(ips) > 0 {
-		ip = ips[0]
-	}
+	ip := preferIPv4(ips)
 	if ip == nil {
 		return "", fmt.Errorf("no IP for %s", host)
 	}
 	return net.JoinHostPort(ip.String(), port), nil
+}
+
+func preferIPv4(ips []net.IP) net.IP {
+	for _, i := range ips {
+		if i.To4() != nil {
+			return i
+		}
+	}
+	if len(ips) > 0 {
+		return ips[0]
+	}
+	return nil
 }
 
 func (p *Provider) resolve(ctx context.Context, hostname string) ([]net.IP, error) {
@@ -230,6 +238,8 @@ type ServerProvider interface {
 	GetFilteredServer(ctx context.Context, filter Filter) (Server, error)
 	GetFilteredServerWithHealth(ctx context.Context, filter Filter, isOnline func(string) bool) (Server, error)
 	SOCKS5DialerFromAddr(ctx context.Context, socksAddr string, timeout time.Duration) (proxy.Dialer, error)
+	ResolveRelayAddr(ctx context.Context, socksAddr string) (string, error)
+	SOCKS5DialerFromResolved(ctx context.Context, resolvedAddr string, timeout time.Duration) (proxy.Dialer, error)
 }
 
 func stringInSlice(ss []string, s string) bool {

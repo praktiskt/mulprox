@@ -369,6 +369,12 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	socksAddr, remoteID, err := h.resolveWithDNS(r.Context(), r)
+	if err != nil {
+		http.Error(w, "no relay DNS reachable", http.StatusBadGateway)
+		return
+	}
+
 	clientConn, _, err := hij.Hijack()
 	if err != nil {
 		h.logger.Debug("client disconnected before hijack", slog.String("error", err.Error()))
@@ -377,33 +383,31 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 
 	var lastErr error
 	var lastRemoteID string
+	lastRemoteID = remoteID
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), h.timeout)
-		socksAddr, remoteID, err := h.resolveSOCKS5(ctx, r)
+
+		dialer, err := h.mullvad.SOCKS5DialerFromResolved(ctx, socksAddr, h.timeout)
 		if err != nil {
 			cancel()
-			h.logger.Debug("failed to get Mullvad server, retrying", slog.String("error", err.Error()))
+			h.logger.Debug("SOCKS5 to relay failed, retrying", slog.String("error", err.Error()))
 			lastErr = err
+			socksAddr, remoteID, err = h.resolveWithDNS(ctx, r)
+			if err != nil {
+				h.logger.Debug("relay DNS failed in retry", slog.String("error", err.Error()))
+				continue
+			}
 			lastRemoteID = remoteID
 			continue
 		}
 
-		dialer, err := h.mullvad.SOCKS5DialerFromAddr(ctx, socksAddr, h.timeout)
-		if err != nil {
-			cancel()
-			h.logger.Debug("failed to create Mullvad session, retrying", slog.String("error", err.Error()))
-			lastErr = err
-			lastRemoteID = remoteID
-			continue
-		}
 		if h.upstreamSOCKS5 != "" {
 			dialer, err = proxy.SOCKS5("tcp", h.upstreamSOCKS5, nil, dialer)
 			if err != nil {
 				cancel()
-				h.logger.Debug("failed to create upstream SOCKS5 dialer, retrying", slog.String("error", err.Error()))
+				h.logger.Debug("upstream SOCKS5 failed, retrying", slog.String("error", err.Error()))
 				lastErr = err
-				lastRemoteID = remoteID
 				continue
 			}
 		}
@@ -411,34 +415,37 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		targetConn, err := dialer.Dial("tcp", host)
 		if err != nil {
 			cancel()
-			h.logger.Debug("failed to connect to target, retrying", slog.String("error", err.Error()))
+			h.logger.Debug("target connect failed, retrying", slog.String("error", err.Error()))
 			lastErr = err
+			socksAddr, remoteID, err = h.resolveWithDNS(ctx, r)
+			if err != nil {
+				h.logger.Debug("relay DNS failed in retry", slog.String("error", err.Error()))
+				continue
+			}
 			lastRemoteID = remoteID
 			continue
 		}
 		cancel()
 
-		if h.stats != nil && remoteID != "" {
-			h.stats.RecordRequest(remoteID)
-		}
-
 		if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
 			clientConn.Close()
 			targetConn.Close()
-			h.logger.Warn("CONNECT failed after hijack",
-				slog.String("error", err.Error()),
-				slog.String("remote", remoteID))
-			if h.stats != nil && remoteID != "" {
-				h.stats.RecordError(remoteID)
+			h.logger.Debug("client disconnected")
+			if h.stats != nil && lastRemoteID != "" {
+				h.stats.RecordError(lastRemoteID)
 			}
 			return
+		}
+
+		if h.stats != nil && remoteID != "" {
+			h.stats.RecordRequest(remoteID)
 		}
 
 		util.Tunnel(clientConn, targetConn, remoteID, h.stats, h.logger)
 		return
 	}
 
-	h.logger.Error("CONNECT request exhausted retries",
+	h.logger.Error("CONNECT exhausted retries",
 		slog.String("error", lastErr.Error()),
 		slog.Int("attempts", maxRetries))
 	if h.stats != nil && lastRemoteID != "" {
@@ -468,32 +475,27 @@ func (h *Handler) handleConnectDirect(w http.ResponseWriter, r *http.Request, ho
 
 		targetConn, err := dialer.Dial("tcp", host)
 		if err != nil {
-			h.logger.Debug("failed to connect to target via direct upstream, retrying", slog.String("error", err.Error()))
+			h.logger.Debug("direct upstream dial failed, retrying", slog.String("error", err.Error()))
 			lastErr = err
 			continue
+		}
+
+		if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
+			clientConn.Close()
+			targetConn.Close()
+			h.logger.Debug("client disconnected")
+			return
 		}
 
 		if h.stats != nil && remoteID != "" {
 			h.stats.RecordRequest(remoteID)
 		}
 
-		if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
-			clientConn.Close()
-			targetConn.Close()
-			h.logger.Warn("CONNECT direct failed after hijack",
-				slog.String("error", err.Error()),
-				slog.String("remote", remoteID))
-			if h.stats != nil && remoteID != "" {
-				h.stats.RecordError(remoteID)
-			}
-			return
-		}
-
 		util.Tunnel(clientConn, targetConn, remoteID, h.stats, h.logger)
 		return
 	}
 
-	h.logger.Error("CONNECT direct request exhausted retries",
+	h.logger.Error("CONNECT direct exhausted retries",
 		slog.String("error", lastErr.Error()),
 		slog.Int("attempts", maxRetries))
 	if h.stats != nil && remoteID != "" {
@@ -540,6 +542,18 @@ func (h *Handler) resolveSOCKS5(ctx context.Context, r *http.Request) (addr, rem
 		h.stats.SetRemoteMetadata(server.Hostname, server.Hostname, server.Country, server.City)
 	}
 	return fmt.Sprintf("%s:%d", server.SOCKS5, server.SOCKSPort), server.Hostname, nil
+}
+
+func (h *Handler) resolveWithDNS(ctx context.Context, r *http.Request) (resolvedAddr, remoteID string, err error) {
+	socksAddr, rid, err := h.resolveSOCKS5(ctx, r)
+	if err != nil {
+		return "", "", err
+	}
+	resolved, err := h.mullvad.ResolveRelayAddr(ctx, socksAddr)
+	if err != nil {
+		return "", "", fmt.Errorf("resolve relay %s: %w", socksAddr, err)
+	}
+	return resolved, rid, nil
 }
 
 // parseProxyAuthHeader decodes "Basic <base64>" header into ProxyAuth.

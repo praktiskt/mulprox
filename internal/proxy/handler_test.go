@@ -1,11 +1,21 @@
 package proxy
 
 import (
+	"bufio"
+	"context"
 	"encoding/base64"
+	"errors"
+	"fmt"
+	"io"
+	"log/slog"
+	"net"
+	"net/http"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
+	"golang.org/x/net/proxy"
 )
 
 func TestParseProxyAuth(t *testing.T) {
@@ -327,4 +337,326 @@ func TestProxyAuthApply(t *testing.T) {
 
 func boolPtr(b bool) *bool {
 	return &b
+}
+
+// --- stub provider + dialers for handler retry tests ---
+
+type stubDialResult struct {
+	dialer proxy.Dialer
+	err    error
+}
+
+type stubProvider struct {
+	relayAddr    string
+	relayErr     error
+	filterServer mullvad.Server
+	filterErr    error
+	dialResults  []stubDialResult
+	dialIdx      int
+}
+
+func (s *stubProvider) FetchMullvadList(ctx context.Context) ([]mullvad.Server, error) { return nil, nil }
+
+func (s *stubProvider) GetFilteredServer(ctx context.Context, filter mullvad.Filter) (mullvad.Server, error) {
+	if s.filterErr != nil {
+		return mullvad.Server{}, s.filterErr
+	}
+	return s.filterServer, nil
+}
+
+func (s *stubProvider) GetFilteredServerWithHealth(ctx context.Context, filter mullvad.Filter, isOnline func(string) bool) (mullvad.Server, error) {
+	if s.filterErr != nil {
+		return mullvad.Server{}, s.filterErr
+	}
+	return s.filterServer, nil
+}
+
+func (s *stubProvider) ResolveRelayAddr(ctx context.Context, socksAddr string) (string, error) {
+	if s.relayErr != nil {
+		return "", s.relayErr
+	}
+	return s.relayAddr, nil
+}
+
+func (s *stubProvider) SOCKS5DialerFromAddr(ctx context.Context, socksAddr string, timeout time.Duration) (proxy.Dialer, error) {
+	return s.SOCKS5DialerFromResolved(ctx, socksAddr, timeout)
+}
+
+func (s *stubProvider) SOCKS5DialerFromResolved(ctx context.Context, resolvedAddr string, timeout time.Duration) (proxy.Dialer, error) {
+	if s.dialIdx >= len(s.dialResults) {
+		return nil, fmt.Errorf("stub: no more dial results")
+	}
+	r := s.dialResults[s.dialIdx]
+	s.dialIdx++
+	return r.dialer, r.err
+}
+
+type dummyConn struct{}
+
+func (dummyConn) Read(_ []byte) (int, error)         { return 0, io.EOF }
+func (dummyConn) Write(b []byte) (int, error)        { return len(b), nil }
+func (dummyConn) Close() error                        { return nil }
+func (dummyConn) LocalAddr() net.Addr                 { return &net.TCPAddr{} }
+func (dummyConn) RemoteAddr() net.Addr                { return &net.TCPAddr{} }
+func (dummyConn) SetDeadline(_ time.Time) error       { return nil }
+func (dummyConn) SetReadDeadline(_ time.Time) error   { return nil }
+func (dummyConn) SetWriteDeadline(_ time.Time) error  { return nil }
+
+type successDialer struct{}
+
+func (d successDialer) Dial(_, _ string) (net.Conn, error) { return dummyConn{}, nil }
+
+type failDialer struct{}
+
+func (d failDialer) Dial(_, _ string) (net.Conn, error) { return nil, errors.New("simulated dial failure") }
+
+// --- test helpers ---
+
+func waitTestReady(t *testing.T, addr string) {
+	t.Helper()
+	for i := 0; i < 50; i++ {
+		conn, err := net.DialTimeout("tcp", addr, 100*time.Millisecond)
+		if err == nil {
+			conn.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("proxy not ready")
+}
+
+func startTestProxy(t *testing.T, p mullvad.ServerProvider, upstream string) (addr string, closeFn func()) {
+	t.Helper()
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := NewWithUpstream(logger, 5*time.Second, p, false, nil, mullvad.Filter{}, upstream)
+	ts := &http.Server{Handler: h, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go ts.Serve(listener)
+	waitTestReady(t, listener.Addr().String())
+	return listener.Addr().String(), func() {
+		ts.Close()
+		listener.Close()
+	}
+}
+
+func sendConnect(t *testing.T, conn net.Conn, host string) {
+	t.Helper()
+	req := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\n\r\n", host, host)
+	_, err := conn.Write([]byte(req))
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func readStatus(t *testing.T, conn net.Conn) string {
+	t.Helper()
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	line, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		return ""
+	}
+	return line
+}
+
+func startNoopSocks5(t *testing.T) (addr string, closeFn func()) {
+	t.Helper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go handleNoopSocks5(conn)
+		}
+	}()
+	return ln.Addr().String(), func() { ln.Close() }
+}
+
+func handleNoopSocks5(conn net.Conn) {
+	defer conn.Close()
+	// read auth methods
+	buf := make([]byte, 2)
+	if _, err := io.ReadFull(conn, buf); err != nil {
+		return
+	}
+	nmethods := int(buf[1])
+	if _, err := io.ReadFull(conn, make([]byte, nmethods)); err != nil {
+		return
+	}
+	// accept no-auth
+	conn.Write([]byte{0x05, 0x00})
+	// read CONNECT request
+	hdr := make([]byte, 4)
+	if _, err := io.ReadFull(conn, hdr); err != nil {
+		return
+	}
+	switch hdr[3] {
+	case 0x01: // IPv4
+		io.ReadFull(conn, make([]byte, 6))
+	case 0x03: // domain
+		var lb [1]byte
+		io.ReadFull(conn, lb[:])
+		io.ReadFull(conn, make([]byte, int(lb[0])+2))
+	case 0x04: // IPv6
+		io.ReadFull(conn, make([]byte, 18))
+	}
+	// success
+	conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
+	io.Copy(io.Discard, conn)
+}
+
+// --- handler retry tests ---
+
+func baseServer() mullvad.Server {
+	return mullvad.Server{Hostname: "test-relay", SOCKS5: "test", SOCKSPort: 1080}
+}
+
+func TestConnectSuccess(t *testing.T) {
+	p := &stubProvider{
+		relayAddr:    "192.0.2.1:1080",
+		filterServer: baseServer(),
+		dialResults:  []stubDialResult{{dialer: successDialer{}}},
+	}
+	addr, closer := startTestProxy(t, p, "")
+	defer closer()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	sendConnect(t, conn, "example.com:443")
+	status := readStatus(t, conn)
+	if status == "" {
+		t.Fatal("no response after CONNECT")
+	}
+	if !containsStatus(status, "200") {
+		t.Errorf("expected 200, got %q", status)
+	}
+}
+
+func TestConnectRetryDialerError(t *testing.T) {
+	dialErr := errors.New("relay unreachable")
+	p := &stubProvider{
+		relayAddr:    "192.0.2.1:1080",
+		filterServer: baseServer(),
+		dialResults: []stubDialResult{
+			{err: dialErr},
+			{dialer: successDialer{}},
+		},
+	}
+	addr, closer := startTestProxy(t, p, "")
+	defer closer()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	sendConnect(t, conn, "example.com:443")
+	status := readStatus(t, conn)
+	if !containsStatus(status, "200") {
+		t.Errorf("expected 200 after retry, got %q", status)
+	}
+}
+
+func TestConnectRetryTargetDialFail(t *testing.T) {
+	p := &stubProvider{
+		relayAddr:    "192.0.2.1:1080",
+		filterServer: baseServer(),
+		dialResults: []stubDialResult{
+			{dialer: failDialer{}},
+			{dialer: successDialer{}},
+		},
+	}
+	addr, closer := startTestProxy(t, p, "")
+	defer closer()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	sendConnect(t, conn, "example.com:443")
+	status := readStatus(t, conn)
+	if !containsStatus(status, "200") {
+		t.Errorf("expected 200 after retry, got %q", status)
+	}
+}
+
+func TestConnectExhausted(t *testing.T) {
+	dialErr := errors.New("relay unreachable")
+	p := &stubProvider{
+		relayAddr:    "192.0.2.1:1080",
+		filterServer: baseServer(),
+		dialResults: []stubDialResult{
+			{err: dialErr},
+			{err: dialErr},
+			{err: dialErr},
+		},
+	}
+	addr, closer := startTestProxy(t, p, "")
+	defer closer()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	sendConnect(t, conn, "example.com:443")
+	status := readStatus(t, conn)
+	if status != "" {
+		t.Errorf("expected no response (connection closed), got %q", status)
+	}
+}
+
+func TestConnectPreHijackDNSFail(t *testing.T) {
+	p := &stubProvider{
+		relayErr:     errors.New("dns timeout"),
+		filterServer: baseServer(),
+	}
+	addr, closer := startTestProxy(t, p, "")
+	defer closer()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	sendConnect(t, conn, "example.com:443")
+	status := readStatus(t, conn)
+	if !containsStatus(status, "502") {
+		t.Errorf("expected 502 Bad Gateway, got %q", status)
+	}
+}
+
+func TestConnectDirect(t *testing.T) {
+	socksAddr, socksClose := startNoopSocks5(t)
+	defer socksClose()
+
+	p := &stubProvider{} // not used, direct path bypasses provider
+	addr, closer := startTestProxy(t, p, "direct://"+socksAddr)
+	defer closer()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	sendConnect(t, conn, "example.com:443")
+	status := readStatus(t, conn)
+	if !containsStatus(status, "200") {
+		t.Errorf("expected 200 for direct, got %q", status)
+	}
+}
+
+func containsStatus(line, code string) bool {
+	return len(line) > 0 && len(line) >= 12 && line[9:12] == code
 }
