@@ -2,6 +2,8 @@ package mullvad
 
 import (
 	"context"
+	"log/slog"
+	"strconv"
 	"testing"
 	"time"
 )
@@ -124,4 +126,61 @@ func TestGetFilteredServer(t *testing.T) {
 		}
 		t.Logf("combined -> %s (%s, %d Mbps)", s.City, s.Provider, s.Speed)
 	})
+}
+
+func TestConnPool(t *testing.T) {
+	logger := slog.Default()
+	p := New()
+	ctx := context.Background()
+	_, err := p.FetchMullvadList(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.Start(ctx, logger)
+	defer p.Stop()
+
+	relay := p.mullvadList[0]
+	relayAddr := relay.SOCKS5 + ":" + strconv.Itoa(relay.SOCKSPort)
+	resolved, err := p.ResolveRelayAddr(ctx, relayAddr)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	const target = "am.i.mullvad.net:443"
+	timeout := 10 * time.Second
+
+	// Call 1: pool empty, fallback path.
+	t1 := time.Now()
+	d1, err := p.SOCKS5DialerFromResolved(ctx, resolved, timeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c1, err := d1.Dial("tcp", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c1.Close()
+	lat1 := time.Since(t1)
+
+	// Wait for replenish goroutine to fill pool.
+	time.Sleep(2 * time.Second)
+
+	// Call 2: pool hit.
+	t2 := time.Now()
+	d2, err := p.SOCKS5DialerFromResolved(ctx, resolved, timeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2, err := d2.Dial("tcp", target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	c2.Close()
+	lat2 := time.Since(t2)
+
+	t.Logf("call 1 (cold): %v", lat1.Round(time.Millisecond))
+	t.Logf("call 2 (warm): %v", lat2.Round(time.Millisecond))
+	if lat2 >= lat1 {
+		t.Errorf("warm call slower than cold: %v >= %v", lat2, lat1)
+	}
 }
