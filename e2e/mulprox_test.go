@@ -582,28 +582,44 @@ func TestMultiHopChaining(t *testing.T) {
 	t.Logf("Multi-hop request succeeded, exit IP: %s", result.IP)
 
 	foundA := false
-	for _, r := range statsStoreA.GetAllRemoteStats() {
-		if r.RequestCount.Load() > 0 {
-			foundA = true
-			t.Logf("proxy A recorded upstream: %s, requests=%d", r.RemoteID, r.RequestCount.Load())
-			if r.RemoteID != serverB.Addr() {
-				t.Errorf("expected A's remote ID to be B's address %s, got %s", serverB.Addr(), r.RemoteID)
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, r := range statsStoreA.GetAllRemoteStats() {
+			if r.RequestCount.Load() > 0 {
+				foundA = true
+				t.Logf("proxy A recorded upstream: %s, requests=%d", r.RemoteID, r.RequestCount.Load())
+				if r.RemoteID != serverB.Addr() {
+					t.Errorf("expected A's remote ID to be B's address %s, got %s", serverB.Addr(), r.RemoteID)
+				}
+				break
 			}
 		}
+		if foundA {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	if !foundA {
 		t.Fatal("proxy A did not record any request stats")
 	}
 
 	foundB := false
-	for _, r := range statsStoreB.GetAllRemoteStats() {
-		if r.RequestCount.Load() > 0 {
-			foundB = true
-			t.Logf("proxy B recorded remote: %s, requests=%d, country=%s", r.RemoteID, r.RequestCount.Load(), r.Country)
-			if r.RemoteID == serverB.Addr() || r.RemoteID == "" {
-				t.Errorf("expected B's remote ID to be a Mullvad hostname, got %s", r.RemoteID)
+	deadline = time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, r := range statsStoreB.GetAllRemoteStats() {
+			if r.RequestCount.Load() > 0 {
+				foundB = true
+				t.Logf("proxy B recorded remote: %s, requests=%d, country=%s", r.RemoteID, r.RequestCount.Load(), r.Country)
+				if r.RemoteID == serverB.Addr() || r.RemoteID == "" {
+					t.Errorf("expected B's remote ID to be a Mullvad hostname, got %s", r.RemoteID)
+				}
+				break
 			}
 		}
+		if foundB {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
 	if !foundB {
 		t.Fatal("proxy B did not record any request stats")
