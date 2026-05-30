@@ -1,4 +1,4 @@
-.PHONY: build build-all test test-race e2e run clean docker-build docker-run
+.PHONY: build build-all test test-race e2e run clean docker-build docker-run bench
 
 LDFLAGS := -s -w -buildid=
 
@@ -40,3 +40,7 @@ docker-tag: docker-build
 
 docker-push: docker-tag
 	docker push praktiskt/mulprox:latest
+
+bench:
+	go test -bench=. -benchtime=10x -count=3 $(shell go list ./... | grep -v /e2e)
+	go test -bench=. -benchtime=5x -count=3 -run='^$$' ./e2e/
