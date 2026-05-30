@@ -61,7 +61,6 @@ type Provider struct {
 	fetchGroup    singleflight.Group
 	dnsAddr       string
 	dnsCache      dnsCache
-	connPool      *ConnPool
 }
 
 func New() *Provider {
@@ -89,11 +88,6 @@ func (p *Provider) SOCKS5DialerFromAddr(ctx context.Context, socksAddr string, t
 }
 
 func (p *Provider) SOCKS5DialerFromResolved(ctx context.Context, resolvedAddr string, timeout time.Duration) (proxy.Dialer, error) {
-	if p.connPool != nil {
-		if dialer, ok := p.connPool.Acquire(resolvedAddr); ok {
-			return dialer, nil
-		}
-	}
 	fwd := &net.Dialer{Timeout: timeout}
 	return proxy.SOCKS5("tcp", resolvedAddr, nil, fwd)
 }
@@ -167,7 +161,6 @@ func (c *dnsCache) set(host string, ips []net.IP) {
 }
 
 func (p *Provider) Start(ctx context.Context, logger *slog.Logger) {
-	p.connPool = NewConnPool(5*time.Second, logger)
 	go p.dnsRefresher(ctx, logger)
 }
 
@@ -209,12 +202,6 @@ func (p *Provider) refreshDNSCache(ctx context.Context, logger *slog.Logger) {
 			continue
 		}
 		p.dnsCache.set(host, ips)
-	}
-}
-
-func (p *Provider) Stop() {
-	if p.connPool != nil {
-		p.connPool.Stop()
 	}
 }
 
