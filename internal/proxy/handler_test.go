@@ -339,8 +339,6 @@ func boolPtr(b bool) *bool {
 	return &b
 }
 
-// --- stub provider + dialers for handler retry tests ---
-
 type stubDialResult struct {
 	dialer proxy.Dialer
 	err    error
@@ -409,8 +407,6 @@ func (d successDialer) Dial(_, _ string) (net.Conn, error) { return dummyConn{},
 type failDialer struct{}
 
 func (d failDialer) Dial(_, _ string) (net.Conn, error) { return nil, errors.New("simulated dial failure") }
-
-// --- test helpers ---
 
 func waitTestReady(t *testing.T, addr string) {
 	t.Helper()
@@ -511,8 +507,6 @@ func handleNoopSocks5(conn net.Conn) {
 	conn.Write([]byte{0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0})
 	io.Copy(io.Discard, conn)
 }
-
-// --- handler retry tests ---
 
 func baseServer() mullvad.Server {
 	return mullvad.Server{Hostname: "test-relay", SOCKS5: "test", SOCKSPort: 1080}

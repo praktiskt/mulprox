@@ -65,6 +65,7 @@ var serveCmd = &cobra.Command{
 		ctx, cancelStats := context.WithCancel(context.Background())
 		defer cancelStats()
 		statsStore.Start()
+	mullvadProvider.Start(ctx, logger)
 
 		var proxyHandler *proxy.Handler
 		if upstreamSOCKS5 != "" {

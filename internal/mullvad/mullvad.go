@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand/v2"
 	"net"
 	"sort"
@@ -59,6 +60,7 @@ type Provider struct {
 	httpClient    *client.Client
 	fetchGroup    singleflight.Group
 	dnsAddr       string
+	dnsCache      dnsCache
 }
 
 func New() *Provider {
@@ -72,6 +74,7 @@ func NewWithDNS(dnsAddr string) *Provider {
 	return &Provider{
 		httpClient: client.NewSession("chrome-latest"),
 		dnsAddr:    dnsAddr,
+		dnsCache:   dnsCache{entries: make(map[string]*dnsCacheEntry)},
 	}
 }
 
@@ -97,9 +100,14 @@ func (p *Provider) ResolveRelayAddr(ctx context.Context, addr string) (string, e
 	if net.ParseIP(host) != nil {
 		return addr, nil
 	}
-	ips, err := p.resolve(ctx, host)
-	if err != nil {
-		return "", fmt.Errorf("resolve relay %s: %w", host, err)
+	ips, found := p.dnsCache.get(host)
+	if !found {
+		var err error
+		ips, err = p.resolve(ctx, host)
+		if err != nil {
+			return "", fmt.Errorf("resolve relay %s: %w", host, err)
+		}
+		p.dnsCache.set(host, ips)
 	}
 	ip := preferIPv4(ips)
 	if ip == nil {
@@ -118,6 +126,83 @@ func preferIPv4(ips []net.IP) net.IP {
 		return ips[0]
 	}
 	return nil
+}
+
+type dnsCache struct {
+	mu      sync.RWMutex
+	entries map[string]*dnsCacheEntry
+}
+
+type dnsCacheEntry struct {
+	ips      []net.IP
+	resolved time.Time
+}
+
+func (c *dnsCache) get(host string) ([]net.IP, bool) {
+	c.mu.RLock()
+	e, ok := c.entries[host]
+	if !ok || time.Since(e.resolved) > 5*time.Minute {
+		c.mu.RUnlock()
+		return nil, false
+	}
+	ips := e.ips
+	c.mu.RUnlock()
+	out := make([]net.IP, len(ips))
+	copy(out, ips)
+	return out, true
+}
+
+func (c *dnsCache) set(host string, ips []net.IP) {
+	cp := make([]net.IP, len(ips))
+	copy(cp, ips)
+	c.mu.Lock()
+	c.entries[host] = &dnsCacheEntry{ips: cp, resolved: time.Now()}
+	c.mu.Unlock()
+}
+
+func (p *Provider) Start(ctx context.Context, logger *slog.Logger) {
+	go p.dnsRefresher(ctx, logger)
+}
+
+func (p *Provider) dnsRefresher(ctx context.Context, logger *slog.Logger) {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+			p.refreshDNSCache(ctx, logger)
+		case <-ctx.Done():
+			return
+		}
+	}
+}
+
+func (p *Provider) refreshDNSCache(ctx context.Context, logger *slog.Logger) {
+	p.mu.RLock()
+	servers := p.mullvadList
+	p.mu.RUnlock()
+	if len(servers) == 0 {
+		return
+	}
+	seen := map[string]bool{}
+	for _, s := range servers {
+		if s.SOCKS5 == "" {
+			continue
+		}
+		host, _, err := net.SplitHostPort(s.SOCKS5 + ":0")
+		if err != nil || net.ParseIP(host) != nil {
+			continue
+		}
+		seen[host] = true
+	}
+	for host := range seen {
+		ips, err := p.resolve(ctx, host)
+		if err != nil {
+			logger.Debug("dns cache refresh failed", slog.String("host", host), slog.String("error", err.Error()))
+			continue
+		}
+		p.dnsCache.set(host, ips)
+	}
 }
 
 func (p *Provider) resolve(ctx context.Context, hostname string) ([]net.IP, error) {
