@@ -353,7 +353,9 @@ type stubProvider struct {
 	dialIdx      int
 }
 
-func (s *stubProvider) FetchMullvadList(ctx context.Context) ([]mullvad.Server, error) { return nil, nil }
+func (s *stubProvider) FetchMullvadList(ctx context.Context) ([]mullvad.Server, error) {
+	return nil, nil
+}
 
 func (s *stubProvider) GetFilteredServer(ctx context.Context, filter mullvad.Filter) (mullvad.Server, error) {
 	if s.filterErr != nil {
@@ -393,12 +395,12 @@ type dummyConn struct{}
 
 func (dummyConn) Read(_ []byte) (int, error)         { return 0, io.EOF }
 func (dummyConn) Write(b []byte) (int, error)        { return len(b), nil }
-func (dummyConn) Close() error                        { return nil }
-func (dummyConn) LocalAddr() net.Addr                 { return &net.TCPAddr{} }
-func (dummyConn) RemoteAddr() net.Addr                { return &net.TCPAddr{} }
-func (dummyConn) SetDeadline(_ time.Time) error       { return nil }
-func (dummyConn) SetReadDeadline(_ time.Time) error   { return nil }
-func (dummyConn) SetWriteDeadline(_ time.Time) error  { return nil }
+func (dummyConn) Close() error                       { return nil }
+func (dummyConn) LocalAddr() net.Addr                { return &net.TCPAddr{} }
+func (dummyConn) RemoteAddr() net.Addr               { return &net.TCPAddr{} }
+func (dummyConn) SetDeadline(_ time.Time) error      { return nil }
+func (dummyConn) SetReadDeadline(_ time.Time) error  { return nil }
+func (dummyConn) SetWriteDeadline(_ time.Time) error { return nil }
 
 type successDialer struct{}
 
@@ -406,7 +408,9 @@ func (d successDialer) Dial(_, _ string) (net.Conn, error) { return dummyConn{},
 
 type failDialer struct{}
 
-func (d failDialer) Dial(_, _ string) (net.Conn, error) { return nil, errors.New("simulated dial failure") }
+func (d failDialer) Dial(_, _ string) (net.Conn, error) {
+	return nil, errors.New("simulated dial failure")
+}
 
 func waitTestReady(t *testing.T, addr string) {
 	t.Helper()

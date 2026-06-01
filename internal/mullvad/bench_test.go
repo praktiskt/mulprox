@@ -89,5 +89,3 @@ func BenchmarkSOCKS5Dial(b *testing.B) {
 		conn.Close()
 	}
 }
-
-

@@ -22,7 +22,7 @@ func newBenchConn() (*benchConn, io.WriteCloser, io.ReadCloser) {
 
 func (c *benchConn) Read(p []byte) (int, error)         { return c.read.Read(p) }
 func (c *benchConn) Write(p []byte) (int, error)        { return c.write.Write(p) }
-func (c *benchConn) Close() error                        { c.read.Close(); return c.write.Close() }
+func (c *benchConn) Close() error                       { c.read.Close(); return c.write.Close() }
 func (c *benchConn) LocalAddr() net.Addr                { return benchAddr{} }
 func (c *benchConn) RemoteAddr() net.Addr               { return benchAddr{} }
 func (c *benchConn) SetDeadline(t time.Time) error      { return nil }
