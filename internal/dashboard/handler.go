@@ -3,8 +3,8 @@ package dashboard
 import (
 	"bytes"
 	"encoding/json"
+	"io"
 	"net/http"
-	"sort"
 	"strings"
 
 	"github.com/praktiskt/mulprox/internal/stats"
@@ -27,163 +27,16 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.serveDashboard(w, r)
 	case "/dashboard/stats":
 		h.serveStats(w, r)
-	case "/dashboard/proxies":
-		h.serveProxies(w, r)
+	case "/dashboard/stream":
+		h.serveStream(w, r)
 	default:
 		http.NotFound(w, r)
 	}
 }
 
-type sortConfig struct {
-	field string
-	dir   string
-}
-
-func (h *Handler) serveProxies(w http.ResponseWriter, r *http.Request) {
-	query := r.URL.Query().Get("q")
-	sortField := r.URL.Query().Get("sort")
-	sortDir := r.URL.Query().Get("dir")
-
-	if sortDir == "" {
-		sortDir = "desc"
-	}
-
-	remotes := h.store.GetAllRemoteStats()
-
-	isSorting := sortField != ""
-	isSearching := query != ""
-
-	if !isSorting && !isSearching {
-		remotes = sortRemotes(remotes, "hostname", "asc")
-	} else if isSearching {
-		remotes = filterRemotes(remotes, query)
-		remotes = sortRemotes(remotes, "hostname", "asc")
-	} else if sortField != "" {
-		remotes = sortRemotes(remotes, sortField, sortDir)
-	}
-
-	data := ProxiesData{
-		Remotes:   remotes,
-		Sort:      sortConfig{field: sortField, dir: sortDir},
-		Query:     query,
-		IsSorting: isSorting,
-	}
-
-	var buf bytes.Buffer
-	if err := ProxiesTableTemplate.Execute(&buf, data); err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.WriteHeader(http.StatusOK)
-	w.Write(buf.Bytes())
-}
-
-func compareRemotes(a, b *stats.RemoteStats, field string) int {
-	switch field {
-	case "hostname":
-		return strings.Compare(a.Hostname, b.Hostname)
-	case "country":
-		return strings.Compare(a.Country, b.Country)
-	case "city":
-		return strings.Compare(a.City, b.City)
-	case "egress_ip":
-		return strings.Compare(a.EgressIP, b.EgressIP)
-	case "status":
-		if a.Health.Online != b.Health.Online {
-			if a.Health.Online {
-				return -1
-			}
-			return 1
-		}
-		return 0
-	case "latency":
-		ingA := a.Health.PingMean
-		ingB := b.Health.PingMean
-		onlineA := a.Health.Online
-		onlineB := b.Health.Online
-		hasPingA := onlineA && ingA > 0
-		hasPingB := onlineB && ingB > 0
-		if hasPingA != hasPingB {
-			if hasPingA {
-				return -1
-			}
-			return 1
-		}
-		if hasPingA {
-			if ingA < ingB {
-				return -1
-			}
-			if ingA > ingB {
-				return 1
-			}
-		}
-		return 0
-	case "requests":
-		ra := a.RequestCount.Load()
-		rb := b.RequestCount.Load()
-		if ra < rb {
-			return -1
-		}
-		if ra > rb {
-			return 1
-		}
-		return 0
-	case "errors":
-		ea := a.ErrorCount.Load()
-		eb := b.ErrorCount.Load()
-		if ea < eb {
-			return -1
-		}
-		if ea > eb {
-			return 1
-		}
-		return 0
-	case "last_used":
-		if a.LastUsed.Before(b.LastUsed) {
-			return -1
-		}
-		if a.LastUsed.After(b.LastUsed) {
-			return 1
-		}
-		return 0
-	default:
-		ra := a.RequestCount.Load()
-		rb := b.RequestCount.Load()
-		if ra < rb {
-			return -1
-		}
-		if ra > rb {
-			return 1
-		}
-		return 0
-	}
-}
-
-func sortRemotes(remotes []*stats.RemoteStats, field, dir string) []*stats.RemoteStats {
-	less := func(i, j int) bool {
-		cmp := compareRemotes(remotes[i], remotes[j], field)
-		if cmp == 0 {
-			cmp = strings.Compare(remotes[i].Hostname, remotes[j].Hostname)
-		}
-		return cmp < 0
-	}
-
-	if dir == "asc" {
-		sort.Slice(remotes, func(i, j int) bool { return less(i, j) })
-	} else {
-		sort.Slice(remotes, func(i, j int) bool { return less(j, i) })
-	}
-
-	return remotes
-}
-
 func (h *Handler) serveDashboard(w http.ResponseWriter, _ *http.Request) {
-	data := Data{
-		Aggregated: h.store.GetAggregatedStats(),
-	}
 	var buf bytes.Buffer
-	if err := DashboardTemplate.Execute(&buf, data); err != nil {
+	if err := DashboardTemplate.Execute(&buf, nil); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
@@ -204,23 +57,42 @@ func (h *Handler) serveStats(w http.ResponseWriter, _ *http.Request) {
 	w.Write(buf.Bytes())
 }
 
-type ProxiesData struct {
-	Remotes   []*stats.RemoteStats
-	Sort      sortConfig
-	Query     string
-	IsSorting bool
+func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request) {
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		http.Error(w, "streaming not supported", http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+
+	enc := json.NewEncoder(w)
+
+	// send initial state immediately
+	snap := h.store.MakeSnapshot()
+	writeSSE(w, enc, "stats", snap.Aggregated)
+	writeSSE(w, enc, "proxies", snap.Proxies)
+	flusher.Flush()
+
+	// subscribe to ticker updates
+	ch, err := h.store.Subscribe(r.Context())
+	if err != nil {
+		return
+	}
+
+	for snap := range ch {
+		writeSSE(w, enc, "stats", snap.Aggregated)
+		writeSSE(w, enc, "proxies", snap.Proxies)
+		flusher.Flush()
+	}
 }
 
-func filterRemotes(remotes []*stats.RemoteStats, query string) []*stats.RemoteStats {
-	query = strings.ToLower(query)
-	var result []*stats.RemoteStats
-	for _, r := range remotes {
-		if strings.Contains(strings.ToLower(r.Hostname), query) ||
-			strings.Contains(strings.ToLower(r.Country), query) ||
-			strings.Contains(strings.ToLower(r.City), query) ||
-			strings.Contains(strings.ToLower(r.EgressIP), query) {
-			result = append(result, r)
-		}
-	}
-	return result
+func writeSSE(w io.Writer, enc *json.Encoder, event string, data any) {
+	io.WriteString(w, "event: ")
+	io.WriteString(w, event)
+	io.WriteString(w, "\ndata: ")
+	enc.Encode(data)
+	io.WriteString(w, "\n\n")
 }

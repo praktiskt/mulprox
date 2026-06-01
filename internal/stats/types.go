@@ -53,6 +53,28 @@ type WindowStat struct {
 	TotalRemotes  int     `json:"total_remotes"`
 }
 
+type ProxySnapshot struct {
+	Hostname     string    `json:"hostname"`
+	Country      string    `json:"country"`
+	City         string    `json:"city"`
+	EgressIP     string    `json:"egress_ip"`
+	Online       bool      `json:"online"`
+	PingMean     float64   `json:"ping_mean"`
+	RequestCount uint64    `json:"request_count"`
+	ErrorCount   uint64    `json:"error_count"`
+	LastUsed     time.Time `json:"last_used"`
+}
+
+type Snapshot struct {
+	Aggregated AggregatedStats
+	Proxies    []ProxySnapshot
+}
+
+type subscriber struct {
+	ch    chan *Snapshot
+	close chan struct{}
+}
+
 type Config struct {
 	HealthCheckInterval            time.Duration
 	HealthCheckTimeout             time.Duration

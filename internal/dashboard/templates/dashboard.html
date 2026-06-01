@@ -4,7 +4,6 @@
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Mulprox Dashboard</title>
-	<script src="https://unpkg.com/htmx.org@2.0.4"></script>
 	<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 	<style>
 		:root {
@@ -312,13 +311,33 @@
 			name="q"
 		>
 		
-		<div id="proxies-table" hx-get="/dashboard/proxies" hx-trigger="load" hx-swap="innerHTML">
-			<div class="loading">Loading proxies...</div>
+		<div id="proxies-table">
+			<div class="table-container">
+				<table>
+					<thead>
+						<tr>
+							<th><a href="#" class="sort-link" data-sort="hostname">Hostname</a></th>
+							<th><a href="#" class="sort-link" data-sort="country">Country</a></th>
+							<th><a href="#" class="sort-link" data-sort="city">City</a></th>
+							<th><a href="#" class="sort-link" data-sort="egress_ip">Egress IP</a></th>
+							<th><a href="#" class="sort-link" data-sort="status">Status</a></th>
+							<th><a href="#" class="sort-link" data-sort="latency">Latency</a></th>
+							<th><a href="#" class="sort-link" data-sort="requests">Requests</a></th>
+							<th><a href="#" class="sort-link" data-sort="errors">Errors</a></th>
+							<th><a href="#" class="sort-link" data-sort="last_used">Last Used</a></th>
+						</tr>
+					</thead>
+					<tbody id="proxies-tbody">
+						<tr><td colspan="9" class="loading">Loading proxies...</td></tr>
+					</tbody>
+				</table>
+			</div>
 		</div>
 	</div>
 
 	<script>
 		let sortState = { field: 'hostname', dir: 'asc' };
+		let proxyData = [];
 
 		const statConfig = {
 			requests:     { key: 'requests',     color: '#89b4fa', isRate: true },
@@ -416,66 +435,131 @@
 			});
 		}
 
-		function refreshProxies() {
-			const table = document.getElementById('proxies-table');
-			const searchBox = document.querySelector('.search-box');
-			const query = searchBox ? searchBox.value : '';
-
-			const params = new URLSearchParams();
-			if (query) params.set('q', query);
-			if (sortState.field) {
-				params.set('sort', sortState.field);
-				params.set('dir', sortState.dir);
-			}
-
-			const url = '/dashboard/proxies?' + params.toString();
-			fetch(url).then(r => r.text()).then(html => {
-				const doc = new DOMParser().parseFromString(html, 'text/html');
-				const newTbody = doc.querySelector('tbody');
-				const oldTbody = table.querySelector('tbody');
-				if (newTbody && oldTbody) {
-					oldTbody.replaceWith(newTbody);
-				} else if (!oldTbody) {
-					table.innerHTML = html;
-				}
-			});
+		function formatProxyTime(t) {
+			if (!t) return '-';
+			return new Date(t).toLocaleTimeString('en-GB', { hour12: false });
 		}
 
-		function refreshStats() {
-			fetch('/dashboard/stats').then(r => r.json()).then(data => {
-				updateCharts(data.window);
+		function latencyClass(ms) {
+			if (ms < 0) return '';
+			if (ms < 100) return 'latency-good';
+			if (ms < 300) return 'latency-ok';
+			return 'latency-bad';
+		}
+
+		function esc(s) {
+			return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+		}
+
+		function renderProxiesTable() {
+			const tbody = document.getElementById('proxies-tbody');
+			const query = (document.querySelector('.search-box')?.value || '').toLowerCase();
+
+			let filtered = proxyData;
+			if (query) {
+				filtered = proxyData.filter(p =>
+					p.hostname.toLowerCase().includes(query) ||
+					p.country.toLowerCase().includes(query) ||
+					p.city.toLowerCase().includes(query) ||
+					p.egress_ip.toLowerCase().includes(query)
+				);
+			}
+
+			const f = sortState.field, d = sortState.dir;
+			filtered.sort((a, b) => {
+				let cmp = 0;
+				switch (f) {
+					case 'hostname': cmp = a.hostname.localeCompare(b.hostname); break;
+					case 'country':  cmp = a.country.localeCompare(b.country); break;
+					case 'city':     cmp = a.city.localeCompare(b.city); break;
+					case 'egress_ip':cmp = a.egress_ip.localeCompare(b.egress_ip); break;
+					case 'status':
+						cmp = (a.online === b.online) ? 0 : a.online ? -1 : 1;
+						break;
+					case 'latency': {
+						const aOk = a.online && a.ping_mean > 0;
+						const bOk = b.online && b.ping_mean > 0;
+						if (aOk !== bOk) { cmp = aOk ? -1 : 1; break; }
+						cmp = a.ping_mean - b.ping_mean;
+						break;
+					}
+					case 'requests': cmp = a.request_count - b.request_count; break;
+					case 'errors':   cmp = a.error_count - b.error_count; break;
+					case 'last_used':
+						cmp = new Date(a.last_used) - new Date(b.last_used);
+						break;
+				}
+				if (cmp === 0) cmp = a.hostname.localeCompare(b.hostname);
+				return d === 'asc' ? cmp : -cmp;
+			});
+
+			if (filtered.length === 0) {
+				tbody.innerHTML = '<tr><td colspan="9" class="empty">No proxies found</td></tr>';
+				return;
+			}
+
+			tbody.innerHTML = filtered.map(p => {
+				const statusClass = p.online ? 'status-online' : 'status-offline';
+				const statusText = p.online ? 'Online' : 'Offline';
+				const latClass = latencyClass(p.ping_mean);
+				const latText = p.online && p.ping_mean > 0 ? Math.round(p.ping_mean) + 'ms' : '\u2014';
+				const errStyle = p.error_count > 0 ? ' style="color: var(--red)"' : '';
+				return `<tr>
+					<td>${esc(p.hostname)}</td>
+					<td>${esc(p.country)}</td>
+					<td>${esc(p.city)}</td>
+					<td class="ip">${esc(p.egress_ip)}</td>
+					<td><span class="status-badge ${statusClass}">${statusText}</span></td>
+					<td class="latency ${latClass}">${latText}</td>
+					<td>${p.request_count}</td>
+					<td${errStyle}>${p.error_count}</td>
+					<td>${formatProxyTime(p.last_used)}</td>
+				</tr>`;
+			}).join('');
+
+			document.querySelectorAll('.sort-link').forEach(link => {
+				const field = link.dataset.sort;
+				const text = link.textContent.replace(/[ ▲▼]$/, '').trim();
+				if (field === sortState.field) {
+					link.textContent = text + (sortState.dir === 'asc' ? ' ▲' : ' ▼');
+				} else {
+					link.textContent = text;
+				}
 			});
 		}
 
 		initCharts();
-		refreshStats();
-		refreshProxies();
-		setInterval(refreshStats, 1000);
-		setInterval(refreshProxies, 1000);
-		
+
+		const evtSource = new EventSource('/dashboard/stream');
+		evtSource.addEventListener('stats', function(e) {
+			updateCharts(JSON.parse(e.data).window);
+		});
+		evtSource.addEventListener('proxies', function(e) {
+			proxyData = JSON.parse(e.data);
+			renderProxiesTable();
+		});
+
 		document.body.addEventListener('click', function(e) {
 			const link = e.target.closest('.sort-link');
 			if (link) {
 				e.preventDefault();
-				const sortField = link.dataset.sort;
-				
-				if (sortState.field === sortField) {
+				const field = link.dataset.sort;
+				if (sortState.field === field) {
 					sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
 				} else {
-					sortState.field = sortField;
+					sortState.field = field;
 					sortState.dir = 'desc';
 				}
-				
-				refreshProxies();
+				renderProxiesTable();
 			}
 		});
 
 		const searchBox = document.querySelector('.search-box');
 		if (searchBox) {
 			let debounceTimer;
-			searchBox.addEventListener('input', function(e) {
+			searchBox.addEventListener('input', function() {
 				clearTimeout(debounceTimer);
-				debounceTimer = setTimeout(refreshProxies, 300);
+				debounceTimer = setTimeout(renderProxiesTable, 300);
 			});
 		}
 	</script>

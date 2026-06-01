@@ -35,6 +35,8 @@ type Store interface {
 	GetAllRemoteStats() []*RemoteStats
 	GetAggregatedStats() AggregatedStats
 	PeekHealth(remoteID string) (RemoteHealth, bool)
+	MakeSnapshot() *Snapshot
+	Subscribe(ctx context.Context) (<-chan *Snapshot, error)
 }
 
 type pendingUpdate struct {
@@ -83,6 +85,9 @@ type InMemoryStore struct {
 	smaBufferErrs [SMAPeriod]float64
 	smaIdx        int
 	smaCount      int
+
+	subs  map[*subscriber]struct{}
+	subMu sync.Mutex
 }
 
 func NewInMemoryStore(logger *slog.Logger) *InMemoryStore {
@@ -93,6 +98,7 @@ func NewInMemoryStore(logger *slog.Logger) *InMemoryStore {
 		updateCh:      make(chan statUpdate, 10000),
 		stopCh:        make(chan struct{}),
 		window:        make([]WindowStat, WindowSize),
+		subs:          make(map[*subscriber]struct{}),
 	}
 }
 
@@ -149,6 +155,8 @@ func (s *InMemoryStore) runWindowTicker() {
 		select {
 		case <-ticker.C:
 			s.updateWindow()
+			snap := s.MakeSnapshot()
+			s.broadcast(snap)
 		case <-s.stopCh:
 			return
 		}
@@ -376,6 +384,61 @@ func (s *InMemoryStore) getWindow() []WindowStat {
 	return result
 }
 
+func (s *InMemoryStore) MakeSnapshot() *Snapshot {
+	agg := s.GetAggregatedStats()
+	remotes := s.RemoteStore.GetAll()
+	proxies := make([]ProxySnapshot, len(remotes))
+	for i, rs := range remotes {
+		proxies[i] = ProxySnapshot{
+			Hostname:     rs.Hostname,
+			Country:      rs.Country,
+			City:         rs.City,
+			EgressIP:     rs.EgressIP,
+			Online:       rs.Health.Online,
+			PingMean:     rs.Health.PingMean,
+			RequestCount: rs.RequestCount.Load(),
+			ErrorCount:   rs.ErrorCount.Load(),
+			LastUsed:     rs.LastUsed,
+		}
+	}
+	return &Snapshot{Aggregated: agg, Proxies: proxies}
+}
+
+func (s *InMemoryStore) Subscribe(ctx context.Context) (<-chan *Snapshot, error) {
+	sub := &subscriber{
+		ch:    make(chan *Snapshot, 1),
+		close: make(chan struct{}),
+	}
+	s.subMu.Lock()
+	s.subs[sub] = struct{}{}
+	s.subMu.Unlock()
+
+	go func() {
+		<-ctx.Done()
+		s.unsubscribe(sub)
+	}()
+
+	return sub.ch, nil
+}
+
+func (s *InMemoryStore) unsubscribe(sub *subscriber) {
+	s.subMu.Lock()
+	delete(s.subs, sub)
+	s.subMu.Unlock()
+	close(sub.ch)
+}
+
+func (s *InMemoryStore) broadcast(snap *Snapshot) {
+	s.subMu.Lock()
+	defer s.subMu.Unlock()
+	for sub := range s.subs {
+		select {
+		case sub.ch <- snap:
+		default:
+		}
+	}
+}
+
 type Collector struct {
 	logger  *slog.Logger
 	store   Store
@@ -396,6 +459,13 @@ func NewCollector(logger *slog.Logger, store Store, mullvadProvider mullvad.Serv
 }
 
 func (c *Collector) Start(ctx context.Context) {
+	servers, err := c.mullvad.FetchMullvadList(ctx)
+	if err == nil {
+		for _, s := range servers {
+			c.store.SetRemoteMetadata(s.Hostname, s.Hostname, s.Country, s.City)
+		}
+	}
+
 	c.wg.Add(1)
 	go c.runHealthChecker(ctx)
 
@@ -500,6 +570,21 @@ func (c *Collector) checkHealth(ctx context.Context) {
 		}()
 	}
 
+	// collector — stores results as workers produce them (pipelined, not batched)
+	var onlineCount int
+	var wgCollect sync.WaitGroup
+	wgCollect.Add(1)
+	go func() {
+		defer wgCollect.Done()
+		for r := range results {
+			c.store.SetRemoteMetadata(r.remoteID, r.hostname, r.country, r.city)
+			c.store.SetRemoteHealth(r.remoteID, r.health)
+			if r.health.Online {
+				onlineCount++
+			}
+		}
+	}()
+
 	for _, server := range servers {
 		select {
 		case jobs <- server:
@@ -507,6 +592,7 @@ func (c *Collector) checkHealth(ctx context.Context) {
 			close(jobs)
 			wg.Wait()
 			close(results)
+			wgCollect.Wait()
 			return
 		}
 	}
@@ -514,15 +600,7 @@ func (c *Collector) checkHealth(ctx context.Context) {
 
 	wg.Wait()
 	close(results)
-
-	var onlineCount int
-	for r := range results {
-		c.store.SetRemoteMetadata(r.remoteID, r.hostname, r.country, r.city)
-		c.store.SetRemoteHealth(r.remoteID, r.health)
-		if r.health.Online {
-			onlineCount++
-		}
-	}
+	wgCollect.Wait()
 
 	c.logger.Debug("health check complete", slog.Int("online", onlineCount))
 }
