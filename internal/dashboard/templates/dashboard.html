@@ -436,7 +436,7 @@
 		}
 
 		function formatProxyTime(t) {
-			if (!t) return '-';
+			if (!t || t.startsWith('0001-')) return '-';
 			return new Date(t).toLocaleTimeString('en-GB', { hour12: false });
 		}
 

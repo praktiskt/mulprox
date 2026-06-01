@@ -30,6 +30,7 @@ type Store interface {
 	RecordError(remoteID string)
 	SetRemoteEgressIP(remoteID string, ip string)
 	SetRemoteMetadata(remoteID, hostname, country, city string)
+	SetRemoteMetadataSync(remoteID, hostname, country, city string)
 	SetRemoteHealth(remoteID string, health RemoteHealth)
 	GetRemoteStats(remoteID string) *RemoteStats
 	GetAllRemoteStats() []*RemoteStats
@@ -126,6 +127,13 @@ func (s *InMemoryStore) Stop() {
 	case <-done:
 	case <-time.After(stopTimeout):
 	}
+
+	s.subMu.Lock()
+	for sub := range s.subs {
+		sub.done.Do(func() { close(sub.ch) })
+		delete(s.subs, sub)
+	}
+	s.subMu.Unlock()
 }
 
 func (s *InMemoryStore) runFlusher() {
@@ -353,6 +361,13 @@ func (s *InMemoryStore) SetRemoteMetadata(remoteID, hostname, country, city stri
 	s.sendNonBlocking(statUpdate{typ: 4, id: remoteID, hostname: hostname, country: country, city: city})
 }
 
+func (s *InMemoryStore) SetRemoteMetadataSync(remoteID, hostname, country, city string) {
+	rs := s.RemoteStore.GetOrCreate(remoteID)
+	rs.Hostname = hostname
+	rs.Country = country
+	rs.City = city
+}
+
 func (s *InMemoryStore) SetRemoteHealth(remoteID string, health RemoteHealth) {
 	s.sendNonBlocking(statUpdate{typ: 5, id: remoteID, health: health})
 }
@@ -406,8 +421,7 @@ func (s *InMemoryStore) MakeSnapshot() *Snapshot {
 
 func (s *InMemoryStore) Subscribe(ctx context.Context) (<-chan *Snapshot, error) {
 	sub := &subscriber{
-		ch:    make(chan *Snapshot, 1),
-		close: make(chan struct{}),
+		ch: make(chan *Snapshot, 1),
 	}
 	s.subMu.Lock()
 	s.subs[sub] = struct{}{}
@@ -425,7 +439,7 @@ func (s *InMemoryStore) unsubscribe(sub *subscriber) {
 	s.subMu.Lock()
 	delete(s.subs, sub)
 	s.subMu.Unlock()
-	close(sub.ch)
+	sub.done.Do(func() { close(sub.ch) })
 }
 
 func (s *InMemoryStore) broadcast(snap *Snapshot) {
@@ -462,7 +476,7 @@ func (c *Collector) Start(ctx context.Context) {
 	servers, err := c.mullvad.FetchMullvadList(ctx)
 	if err == nil {
 		for _, s := range servers {
-			c.store.SetRemoteMetadata(s.Hostname, s.Hostname, s.Country, s.City)
+			c.store.SetRemoteMetadataSync(s.Hostname, s.Hostname, s.Country, s.City)
 		}
 	}
 

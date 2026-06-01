@@ -71,8 +71,8 @@ type Snapshot struct {
 }
 
 type subscriber struct {
-	ch    chan *Snapshot
-	close chan struct{}
+	ch   chan *Snapshot
+	done sync.Once
 }
 
 type Config struct {

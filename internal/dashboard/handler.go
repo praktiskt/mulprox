@@ -70,29 +70,46 @@ func (h *Handler) serveStream(w http.ResponseWriter, r *http.Request) {
 
 	enc := json.NewEncoder(w)
 
-	// send initial state immediately
 	snap := h.store.MakeSnapshot()
-	writeSSE(w, enc, "stats", snap.Aggregated)
-	writeSSE(w, enc, "proxies", snap.Proxies)
+	if err := writeSSE(w, enc, "stats", snap.Aggregated); err != nil {
+		return
+	}
+	if err := writeSSE(w, enc, "proxies", snap.Proxies); err != nil {
+		return
+	}
 	flusher.Flush()
 
-	// subscribe to ticker updates
 	ch, err := h.store.Subscribe(r.Context())
 	if err != nil {
 		return
 	}
 
 	for snap := range ch {
-		writeSSE(w, enc, "stats", snap.Aggregated)
-		writeSSE(w, enc, "proxies", snap.Proxies)
+		if err := writeSSE(w, enc, "stats", snap.Aggregated); err != nil {
+			return
+		}
+		if err := writeSSE(w, enc, "proxies", snap.Proxies); err != nil {
+			return
+		}
 		flusher.Flush()
 	}
 }
 
-func writeSSE(w io.Writer, enc *json.Encoder, event string, data any) {
-	io.WriteString(w, "event: ")
-	io.WriteString(w, event)
-	io.WriteString(w, "\ndata: ")
-	enc.Encode(data)
-	io.WriteString(w, "\n\n")
+func writeSSE(w io.Writer, enc *json.Encoder, event string, data any) error {
+	if _, err := io.WriteString(w, "event: "); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w, event); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w, "\ndata: "); err != nil {
+		return err
+	}
+	if err := enc.Encode(data); err != nil {
+		return err
+	}
+	if _, err := io.WriteString(w, "\n\n"); err != nil {
+		return err
+	}
+	return nil
 }
