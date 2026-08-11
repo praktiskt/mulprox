@@ -5,6 +5,9 @@ metadata:
   name: {{ .Release.Name }}-proxy
   labels:
     app: {{ .Release.Name }}
+    {{- with .Values.ingress.labels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
   annotations:
     tailscale.com/hostname: {{ .Release.Name }}-proxy
 spec:
