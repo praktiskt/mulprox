@@ -30,6 +30,10 @@ type RemoteStats struct {
 	Health       RemoteHealth  `json:"health"`
 	LastUsed     time.Time     `json:"last_used"`
 	CreatedAt    time.Time     `json:"created_at"`
+
+	// healthMu guards Health and LastUsed, written from request goroutines
+	// (circuit breaker) and the stats flusher.
+	healthMu sync.Mutex
 }
 
 type AggregatedStats struct {
@@ -93,7 +97,7 @@ func DefaultConfig() Config {
 	return Config{
 		HealthCheckInterval:            30 * time.Second,
 		HealthCheckTimeout:             60 * time.Second,
-		HealthCheckHTTPTimeout:         10 * time.Second,
+		HealthCheckHTTPTimeout:         5 * time.Second,
 		PingCount:                      2,
 		HealthCheckConsecutiveFailures: 2,
 		HealthCheckHealthyThreshold:    3,
@@ -149,11 +153,32 @@ func (s *RemoteStore) GetAll() []*RemoteStats {
 
 func (s *RemoteStore) PeekHealth(remoteID string) (RemoteHealth, bool) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	if stats, ok := s.remotes[remoteID]; ok {
-		return stats.Health, true
+	stats, ok := s.remotes[remoteID]
+	s.mu.RUnlock()
+	if !ok {
+		return RemoteHealth{}, false
 	}
-	return RemoteHealth{}, false
+	stats.healthMu.Lock()
+	h := stats.Health
+	stats.healthMu.Unlock()
+	if h.LastCheck.IsZero() {
+		// entry exists (e.g. metadata) but never health-checked: unknown
+		return RemoteHealth{}, false
+	}
+	return h, true
+}
+
+// RecordRemoteFailure atomically registers one relay-level failure and marks
+// the relay offline once consecutive failures reach threshold.
+func (s *RemoteStore) RecordRemoteFailure(remoteID string, threshold int) bool {
+	rs := s.GetOrCreate(remoteID)
+	rs.healthMu.Lock()
+	defer rs.healthMu.Unlock()
+	rs.Health.ConsecutiveFailures++
+	rs.Health.Online = rs.Health.ConsecutiveFailures < threshold
+	rs.Health.ConsecutiveSuccesses = 0
+	rs.Health.LastCheck = time.Now()
+	return rs.Health.Online
 }
 
 func (s *RemoteStore) GetAggregated() AggregatedStats {
@@ -172,7 +197,10 @@ func (s *RemoteStore) GetAggregated() AggregatedStats {
 		agg.TotalBytesRecv += bytesRecv
 		agg.TotalErrors += errCount
 		agg.TotalRemotes++
-		if rs.Health.Online {
+		rs.healthMu.Lock()
+		online := rs.Health.Online
+		rs.healthMu.Unlock()
+		if online {
 			agg.ActiveRemotes++
 			agg.OnlineRemotes++
 		}

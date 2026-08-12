@@ -22,6 +22,8 @@ const (
 	WindowSize           = 120
 	SMAPeriod            = 5
 	stopTimeout          = 10 * time.Second
+	// healthCheckActiveWindow: relays unused this long skip health checks.
+	healthCheckActiveWindow = 15 * time.Minute
 )
 
 type Store interface {
@@ -32,6 +34,7 @@ type Store interface {
 	SetRemoteMetadata(remoteID, hostname, country, city string)
 	SetRemoteMetadataSync(remoteID, hostname, country, city string)
 	SetRemoteHealth(remoteID string, health RemoteHealth)
+	RecordRemoteFailure(remoteID string, threshold int) bool
 	GetRemoteStats(remoteID string) *RemoteStats
 	GetAllRemoteStats() []*RemoteStats
 	GetAggregatedStats() AggregatedStats
@@ -308,7 +311,9 @@ apply:
 				stats.ErrorCount.Add(ec)
 			}
 			if rc > 0 || ec > 0 {
+				stats.healthMu.Lock()
 				stats.LastUsed = time.Now()
+				stats.healthMu.Unlock()
 			}
 			if he {
 				stats.EgressIP = ip
@@ -319,7 +324,9 @@ apply:
 				stats.City = ci
 			}
 			if hhc {
+				stats.healthMu.Lock()
 				stats.Health = hh
+				stats.healthMu.Unlock()
 			}
 		}
 	}
@@ -372,6 +379,13 @@ func (s *InMemoryStore) SetRemoteHealth(remoteID string, health RemoteHealth) {
 	s.sendNonBlocking(statUpdate{typ: 5, id: remoteID, health: health})
 }
 
+func (s *InMemoryStore) RecordRemoteFailure(remoteID string, threshold int) bool {
+	if remoteID == "" {
+		return true
+	}
+	return s.RemoteStore.RecordRemoteFailure(remoteID, threshold)
+}
+
 func (s *InMemoryStore) GetRemoteStats(remoteID string) *RemoteStats {
 	return s.RemoteStore.GetOrCreate(remoteID)
 }
@@ -404,16 +418,21 @@ func (s *InMemoryStore) MakeSnapshot() *Snapshot {
 	remotes := s.RemoteStore.GetAll()
 	proxies := make([]ProxySnapshot, len(remotes))
 	for i, rs := range remotes {
+		rs.healthMu.Lock()
+		online := rs.Health.Online
+		pingMean := rs.Health.PingMean
+		lastUsed := rs.LastUsed
+		rs.healthMu.Unlock()
 		proxies[i] = ProxySnapshot{
 			Hostname:     rs.Hostname,
 			Country:      rs.Country,
 			City:         rs.City,
 			EgressIP:     rs.EgressIP,
-			Online:       rs.Health.Online,
-			PingMean:     rs.Health.PingMean,
+			Online:       online,
+			PingMean:     pingMean,
 			RequestCount: rs.RequestCount.Load(),
 			ErrorCount:   rs.ErrorCount.Load(),
-			LastUsed:     rs.LastUsed,
+			LastUsed:     lastUsed,
 		}
 	}
 	return &Snapshot{Aggregated: agg, Proxies: proxies}
@@ -565,7 +584,7 @@ func (c *Collector) checkHealth(ctx context.Context) {
 		health   RemoteHealth
 	}
 
-	const workers = 20
+	const workers = 100
 	jobs := make(chan mullvad.Server, len(servers))
 	results := make(chan result, len(servers))
 
@@ -575,9 +594,13 @@ func (c *Collector) checkHealth(ctx context.Context) {
 		go func() {
 			defer wg.Done()
 			for s := range jobs {
-				serverCtx, cancel := context.WithTimeout(ctx, c.config.HealthCheckHTTPTimeout)
 				currentStats := c.store.GetRemoteStats(s.Hostname)
-				health := c.pingServer(serverCtx, s.SOCKS5, s.SOCKSPort, currentStats.Health.ConsecutiveFailures, currentStats.Health.ConsecutiveSuccesses)
+				if skipHealthCheck(currentStats) {
+					continue
+				}
+				serverCtx, cancel := context.WithTimeout(ctx, c.config.HealthCheckHTTPTimeout)
+				cf, cs := consecutiveHealth(currentStats)
+				health := c.pingServer(serverCtx, s.SOCKS5, s.SOCKSPort, cf, cs)
 				cancel()
 				results <- result{remoteID: s.Hostname, hostname: s.Hostname, country: s.Country, city: s.City, health: health}
 			}
@@ -633,7 +656,7 @@ func (c *Collector) CheckHealthOne(ctx context.Context) (mullvad.Server, error) 
 		health RemoteHealth
 	}
 
-	const workers = 50
+	const workers = 100
 	jobs := make(chan mullvad.Server, len(servers))
 	results := make(chan result, len(servers))
 
@@ -645,7 +668,8 @@ func (c *Collector) CheckHealthOne(ctx context.Context) (mullvad.Server, error) 
 			for s := range jobs {
 				serverCtx, cancel := context.WithTimeout(ctx, c.config.HealthCheckHTTPTimeout)
 				currentStats := c.store.GetRemoteStats(s.Hostname)
-				health := c.pingServer(serverCtx, s.SOCKS5, s.SOCKSPort, currentStats.Health.ConsecutiveFailures, currentStats.Health.ConsecutiveSuccesses)
+				cf, cs := consecutiveHealth(currentStats)
+				health := c.pingServer(serverCtx, s.SOCKS5, s.SOCKSPort, cf, cs)
 				cancel()
 				results <- result{server: s, health: health}
 			}
@@ -677,6 +701,28 @@ func (c *Collector) CheckHealthOne(ctx context.Context) (mullvad.Server, error) 
 	}
 
 	return mullvad.Server{}, fmt.Errorf("no online servers found")
+}
+
+// skipHealthCheck reports whether the relay can be skipped: it is online,
+// has been used at least once, and was idle longer than the active window.
+// Offline and never-used relays are always checked (recovery / cold start).
+func skipHealthCheck(rs *RemoteStats) bool {
+	rs.healthMu.Lock()
+	online := rs.Health.Online
+	lastUsed := rs.LastUsed
+	rs.healthMu.Unlock()
+	if !online || lastUsed.IsZero() {
+		return false
+	}
+	return time.Since(lastUsed) > healthCheckActiveWindow
+}
+
+// consecutiveHealth reads failure/success counters guarded for the request
+// path's circuit breaker.
+func consecutiveHealth(rs *RemoteStats) (failures, successes int) {
+	rs.healthMu.Lock()
+	defer rs.healthMu.Unlock()
+	return rs.Health.ConsecutiveFailures, rs.Health.ConsecutiveSuccesses
 }
 
 func (c *Collector) pingServer(ctx context.Context, socksHost string, socksPort int, currentConsecutiveFailures int, currentConsecutiveSuccesses int) RemoteHealth {

@@ -322,6 +322,7 @@ type ServerProvider interface {
 	FetchMullvadList(ctx context.Context) ([]Server, error)
 	GetFilteredServer(ctx context.Context, filter Filter) (Server, error)
 	GetFilteredServerWithHealth(ctx context.Context, filter Filter, isOnline func(string) bool) (Server, error)
+	GetFilteredServers(ctx context.Context, filter Filter) ([]Server, error)
 	SOCKS5DialerFromAddr(ctx context.Context, socksAddr string, timeout time.Duration) (proxy.Dialer, error)
 	ResolveRelayAddr(ctx context.Context, socksAddr string) (string, error)
 	SOCKS5DialerFromResolved(ctx context.Context, resolvedAddr string, timeout time.Duration) (proxy.Dialer, error)

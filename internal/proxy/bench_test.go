@@ -52,7 +52,7 @@ func BenchmarkResolveSOCKS5(b *testing.B) {
 	b.ReportAllocs()
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
-		_, _, err := h.resolveSOCKS5(ctx, r)
+		_, _, err := h.resolveSOCKS5(ctx, r, nil)
 		if err != nil {
 			b.Fatal(err)
 		}

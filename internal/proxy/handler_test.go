@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/praktiskt/mulprox/internal/mullvad"
+	"github.com/praktiskt/mulprox/internal/stats"
 	"golang.org/x/net/proxy"
 )
 
@@ -371,6 +372,13 @@ func (s *stubProvider) GetFilteredServerWithHealth(ctx context.Context, filter m
 	return s.filterServer, nil
 }
 
+func (s *stubProvider) GetFilteredServers(ctx context.Context, filter mullvad.Filter) ([]mullvad.Server, error) {
+	if s.filterErr != nil {
+		return nil, s.filterErr
+	}
+	return []mullvad.Server{s.filterServer}, nil
+}
+
 func (s *stubProvider) ResolveRelayAddr(ctx context.Context, socksAddr string) (string, error) {
 	if s.relayErr != nil {
 		return "", s.relayErr
@@ -412,6 +420,65 @@ func (d failDialer) Dial(_, _ string) (net.Conn, error) {
 	return nil, errors.New("simulated dial failure")
 }
 
+type errorDialer struct {
+	err error
+}
+
+func (d errorDialer) Dial(_, _ string) (net.Conn, error) {
+	return nil, d.err
+}
+
+// exclusionProvider serves a fixed relay list; GetFilteredServerWithHealth
+// honors the isOnline callback, relays get per-hostname dialers.
+type exclusionProvider struct {
+	servers []mullvad.Server
+	dialers map[string]proxy.Dialer
+}
+
+func (p *exclusionProvider) FetchMullvadList(ctx context.Context) ([]mullvad.Server, error) {
+	return p.servers, nil
+}
+
+func (p *exclusionProvider) GetFilteredServer(ctx context.Context, filter mullvad.Filter) (mullvad.Server, error) {
+	if len(p.servers) == 0 {
+		return mullvad.Server{}, errors.New("no servers match filter")
+	}
+	return p.servers[0], nil
+}
+
+func (p *exclusionProvider) GetFilteredServerWithHealth(ctx context.Context, filter mullvad.Filter, isOnline func(string) bool) (mullvad.Server, error) {
+	for _, s := range p.servers {
+		if isOnline(s.Hostname) {
+			return s, nil
+		}
+	}
+	return mullvad.Server{}, errors.New("no healthy servers match filter")
+}
+
+func (p *exclusionProvider) GetFilteredServers(ctx context.Context, filter mullvad.Filter) ([]mullvad.Server, error) {
+	return p.servers, nil
+}
+
+func (p *exclusionProvider) ResolveRelayAddr(ctx context.Context, socksAddr string) (string, error) {
+	return socksAddr, nil
+}
+
+func (p *exclusionProvider) SOCKS5DialerFromAddr(ctx context.Context, socksAddr string, timeout time.Duration) (proxy.Dialer, error) {
+	return p.SOCKS5DialerFromResolved(ctx, socksAddr, timeout)
+}
+
+func (p *exclusionProvider) SOCKS5DialerFromResolved(ctx context.Context, resolvedAddr string, timeout time.Duration) (proxy.Dialer, error) {
+	host, _, err := net.SplitHostPort(resolvedAddr)
+	if err != nil {
+		return nil, err
+	}
+	d, ok := p.dialers[host]
+	if !ok {
+		return nil, fmt.Errorf("no dialer for %s", host)
+	}
+	return d, nil
+}
+
 func waitTestReady(t *testing.T, addr string) {
 	t.Helper()
 	for i := 0; i < 50; i++ {
@@ -427,8 +494,13 @@ func waitTestReady(t *testing.T, addr string) {
 
 func startTestProxy(t *testing.T, p mullvad.ServerProvider, upstream string) (addr string, closeFn func()) {
 	t.Helper()
+	return startTestProxyWithStore(t, p, nil, upstream)
+}
+
+func startTestProxyWithStore(t *testing.T, p mullvad.ServerProvider, store stats.Store, upstream string) (addr string, closeFn func()) {
+	t.Helper()
 	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
-	h := NewWithUpstream(logger, 5*time.Second, p, false, nil, mullvad.Filter{}, upstream)
+	h := NewWithUpstream(logger, 5*time.Second, p, false, store, mullvad.Filter{}, upstream)
 	ts := &http.Server{Handler: h, ReadTimeout: 5 * time.Second, WriteTimeout: 5 * time.Second}
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -657,4 +729,154 @@ func TestConnectDirect(t *testing.T) {
 
 func containsStatus(line, code string) bool {
 	return len(line) > 0 && len(line) >= 12 && line[9:12] == code
+}
+
+func TestResolveSOCKS5ExcludesFailed(t *testing.T) {
+	p := &exclusionProvider{
+		servers: []mullvad.Server{
+			{Hostname: "relay-a", SOCKS5: "relay-a", SOCKSPort: 1080},
+			{Hostname: "relay-b", SOCKS5: "relay-b", SOCKSPort: 1080},
+		},
+	}
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	h := NewWithUpstream(logger, 5*time.Second, p, false, nil, mullvad.Filter{}, "")
+	r, _ := http.NewRequest(http.MethodConnect, "example.com:443", nil)
+
+	_, rid, err := h.resolveSOCKS5(context.Background(), r, map[string]bool{"relay-a": true})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if rid != "relay-b" {
+		t.Errorf("expected relay-b, got %s", rid)
+	}
+
+	_, _, err = h.resolveSOCKS5(context.Background(), r, map[string]bool{"relay-a": true, "relay-b": true})
+	if err == nil {
+		t.Error("expected error when all relays excluded")
+	}
+}
+
+func TestConnectRetryExcludesDeadRelay(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store := stats.NewInMemoryStore(logger)
+	store.Start()
+	defer store.Stop()
+
+	refused := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
+	p := &exclusionProvider{
+		servers: []mullvad.Server{
+			{Hostname: "relay-a", SOCKS5: "relay-a", SOCKSPort: 1080},
+			{Hostname: "relay-b", SOCKS5: "relay-b", SOCKSPort: 1080},
+		},
+		dialers: map[string]proxy.Dialer{
+			"relay-a": errorDialer{err: refused},
+			"relay-b": successDialer{},
+		},
+	}
+	addr, closer := startTestProxyWithStore(t, p, store, "")
+	defer closer()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	sendConnect(t, conn, "example.com:443")
+	status := readStatus(t, conn)
+	if !containsStatus(status, "200") {
+		t.Errorf("expected 200 via healthy relay, got %q", status)
+	}
+
+	time.Sleep(300 * time.Millisecond) // let stats flush
+	health, ok := store.PeekHealth("relay-a")
+	if !ok {
+		t.Fatal("relay-a health missing")
+	}
+	if health.ConsecutiveFailures != 1 {
+		t.Errorf("expected 1 failure on relay-a, got %d", health.ConsecutiveFailures)
+	}
+	if !health.Online {
+		t.Error("relay-a should still be online after 1 strike")
+	}
+}
+
+func TestConnectCircuitBreakerOfflineAfterStrikes(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store := stats.NewInMemoryStore(logger)
+	store.Start()
+	defer store.Stop()
+
+	refused := &net.OpError{Op: "dial", Net: "tcp", Err: errors.New("connection refused")}
+	p := &exclusionProvider{
+		servers: []mullvad.Server{
+			{Hostname: "relay-a", SOCKS5: "relay-a", SOCKSPort: 1080},
+			{Hostname: "relay-b", SOCKS5: "relay-b", SOCKSPort: 1080},
+		},
+		dialers: map[string]proxy.Dialer{
+			"relay-a": errorDialer{err: refused},
+			"relay-b": successDialer{},
+		},
+	}
+	addr, closer := startTestProxyWithStore(t, p, store, "")
+	defer closer()
+
+	req := func() string {
+		conn, err := net.Dial("tcp", addr)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer conn.Close()
+		sendConnect(t, conn, "example.com:443")
+		return readStatus(t, conn)
+	}
+
+	for i := 1; i <= 2; i++ {
+		if status := req(); !containsStatus(status, "200") {
+			t.Fatalf("request %d: expected 200, got %q", i, status)
+		}
+		time.Sleep(300 * time.Millisecond)
+	}
+	health, ok := store.PeekHealth("relay-a")
+	if !ok {
+		t.Fatal("relay-a health missing")
+	}
+	if health.ConsecutiveFailures != 2 {
+		t.Errorf("expected 2 failures on relay-a, got %d", health.ConsecutiveFailures)
+	}
+	if health.Online {
+		t.Error("relay-a should be offline after 2 strikes")
+	}
+
+	if status := req(); !containsStatus(status, "200") {
+		t.Fatalf("request 3: expected 200, got %q", status)
+	}
+	time.Sleep(300 * time.Millisecond)
+	health, _ = store.PeekHealth("relay-a")
+	if health.ConsecutiveFailures != 2 {
+		t.Errorf("offline relay-a should not accumulate strikes, got %d", health.ConsecutiveFailures)
+	}
+}
+
+func TestPickFallbackPrefersUnknownOverDead(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store := stats.NewInMemoryStore(logger)
+	store.Start()
+	defer store.Stop()
+	store.RecordRemoteFailure("relay-b", 2)
+
+	p := &exclusionProvider{
+		servers: []mullvad.Server{
+			{Hostname: "relay-a", SOCKS5: "relay-a", SOCKSPort: 1080},
+			{Hostname: "relay-b", SOCKS5: "relay-b", SOCKSPort: 1080},
+		},
+	}
+	h := NewWithUpstream(logger, 5*time.Second, p, false, store, mullvad.Filter{}, "")
+
+	server, err := h.pickFallbackServer(context.Background(), mullvad.Filter{}, nil)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if server.Hostname != "relay-a" {
+		t.Errorf("expected unknown relay-a over dead relay-b, got %s", server.Hostname)
+	}
 }

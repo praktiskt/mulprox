@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math/rand/v2"
 	"net"
 	"net/http"
 	"strings"
@@ -22,6 +23,9 @@ import (
 const (
 	maxRetries            = 3
 	maxTransportCacheSize = 50
+	// circuitBreakerStrikes: relay goes offline after this many consecutive
+	// request-level failures; health checker handles recovery.
+	circuitBreakerStrikes = 2
 )
 
 const indexResponse = "Mullvad Proxy Server\nUsage: Set HTTP_PROXY environment variable to point to this server"
@@ -152,9 +156,9 @@ func (h *Handler) proxyHTTP(parentCtx context.Context, w http.ResponseWriter, r 
 	bodyBuf, err := h.readBody(r)
 	if err != nil {
 		if errors.Is(err, errBodyTooLarge) {
-			result := h.roundTrip(parentCtx, r, targetURL, r.Body, r.ContentLength)
+			result := h.roundTrip(parentCtx, r, targetURL, r.Body, r.ContentLength, nil)
 			if result.err != nil {
-				h.logAndRespond(w, result.remoteID, result.err, false)
+				h.logAndRespond(w, result.remoteID, result.err, isRelayFailure(result.err))
 				return
 			}
 			defer result.resp.Body.Close()
@@ -173,19 +177,23 @@ func (h *Handler) proxyHTTP(parentCtx context.Context, w http.ResponseWriter, r 
 	}
 
 	var lastResult *roundTripResult
+	excluded := make(map[string]bool)
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		if bodyBuf != nil {
 			reqBody = bytes.NewReader(bodyBuf)
 		}
-		result := h.roundTrip(parentCtx, r, targetURL, reqBody, bodyLen)
+		result := h.roundTrip(parentCtx, r, targetURL, reqBody, bodyLen, excluded)
 
 		if result.err != nil {
 			if result.resp != nil && result.resp.Body != nil {
 				result.resp.Body.Close()
 			}
+			if result.remoteID != "" {
+				excluded[result.remoteID] = true
+			}
 			if !isRetryable(result.err) {
-				h.logAndRespond(w, result.remoteID, result.err, false)
+				h.logAndRespond(w, result.remoteID, result.err, isRelayFailure(result.err))
 				return
 			}
 			lastResult = result
@@ -200,11 +208,11 @@ func (h *Handler) proxyHTTP(parentCtx context.Context, w http.ResponseWriter, r 
 	h.logger.Error("proxy request exhausted retries",
 		slog.String("error", lastResult.err.Error()),
 		slog.Int("attempts", maxRetries))
-	h.logAndRespond(w, lastResult.remoteID, lastResult.err, false)
+	h.logAndRespond(w, lastResult.remoteID, lastResult.err, isRelayFailure(lastResult.err))
 }
 
 // roundTrip: resolve SOCKS5 -> build transport -> execute request.
-func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL string, body io.Reader, bodyLen int64) *roundTripResult {
+func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL string, body io.Reader, bodyLen int64, exclude map[string]bool) *roundTripResult {
 	var tr *http.Transport
 	var remoteID string
 
@@ -220,7 +228,7 @@ func (h *Handler) roundTrip(ctx context.Context, r *http.Request, targetURL stri
 			tr = h.createAndCacheTransport(h.upstreamSOCKS5, dialer)
 		}
 	} else {
-		socksAddr, resolvedID, err := h.resolveSOCKS5(ctx, r)
+		socksAddr, resolvedID, err := h.resolveSOCKS5(ctx, r, exclude)
 		if err != nil {
 			return &roundTripResult{err: err}
 		}
@@ -369,7 +377,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	socksAddr, remoteID, err := h.resolveWithDNS(r.Context(), r)
+	socksAddr, remoteID, err := h.resolveWithDNS(r.Context(), r, nil)
 	if err != nil {
 		http.Error(w, "no relay DNS reachable", http.StatusBadGateway)
 		return
@@ -384,6 +392,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 	var lastErr error
 	var lastRemoteID string
 	lastRemoteID = remoteID
+	excluded := make(map[string]bool)
 
 	for attempt := 0; attempt < maxRetries; attempt++ {
 		ctx, cancel := context.WithTimeout(context.WithoutCancel(r.Context()), h.timeout)
@@ -393,7 +402,11 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 			cancel()
 			h.logger.Debug("SOCKS5 to relay failed, retrying", slog.String("error", err.Error()))
 			lastErr = err
-			socksAddr, remoteID, err = h.resolveWithDNS(ctx, r)
+			excluded[remoteID] = true
+			if isRelayFailure(err) {
+				h.markRemoteUnhealthy(remoteID)
+			}
+			socksAddr, remoteID, err = h.resolveWithDNS(ctx, r, excluded)
 			if err != nil {
 				h.logger.Debug("relay DNS failed in retry", slog.String("error", err.Error()))
 				continue
@@ -417,7 +430,11 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 			cancel()
 			h.logger.Debug("target connect failed, retrying", slog.String("error", err.Error()))
 			lastErr = err
-			socksAddr, remoteID, err = h.resolveWithDNS(ctx, r)
+			excluded[remoteID] = true
+			if isRelayFailure(err) {
+				h.markRemoteUnhealthy(remoteID)
+			}
+			socksAddr, remoteID, err = h.resolveWithDNS(ctx, r, excluded)
 			if err != nil {
 				h.logger.Debug("relay DNS failed in retry", slog.String("error", err.Error()))
 				continue
@@ -504,7 +521,7 @@ func (h *Handler) handleConnectDirect(w http.ResponseWriter, r *http.Request, ho
 	clientConn.Close()
 }
 
-func (h *Handler) resolveSOCKS5(ctx context.Context, r *http.Request) (addr, remoteID string, err error) {
+func (h *Handler) resolveSOCKS5(ctx context.Context, r *http.Request, exclude map[string]bool) (addr, remoteID string, err error) {
 	filter := h.baseFilter.Clone()
 
 	if v := r.Header.Get("Proxy-Authorization"); v != "" {
@@ -516,6 +533,9 @@ func (h *Handler) resolveSOCKS5(ctx context.Context, r *http.Request) (addr, rem
 	}
 
 	isOnline := func(hostname string) bool {
+		if exclude[hostname] {
+			return false
+		}
 		if h.stats == nil {
 			return true
 		}
@@ -533,7 +553,7 @@ func (h *Handler) resolveSOCKS5(ctx context.Context, r *http.Request) (addr, rem
 
 	h.logger.Debug("no healthy server found, falling back to any server", slog.String("error", err.Error()))
 
-	server, err = h.mullvad.GetFilteredServer(ctx, filter)
+	server, err = h.pickFallbackServer(ctx, filter, exclude)
 	if err != nil {
 		return "", "", err
 	}
@@ -544,8 +564,42 @@ func (h *Handler) resolveSOCKS5(ctx context.Context, r *http.Request) (addr, rem
 	return fmt.Sprintf("%s:%d", server.SOCKS5, server.SOCKSPort), server.Hostname, nil
 }
 
-func (h *Handler) resolveWithDNS(ctx context.Context, r *http.Request) (resolvedAddr, remoteID string, err error) {
-	socksAddr, rid, err := h.resolveSOCKS5(ctx, r)
+// pickFallbackServer picks a random relay when no healthy match exists;
+// prefers relays with unknown or healthy state over known-dead ones.
+func (h *Handler) pickFallbackServer(ctx context.Context, filter mullvad.Filter, exclude map[string]bool) (mullvad.Server, error) {
+	servers, err := h.mullvad.GetFilteredServers(ctx, filter)
+	if err != nil {
+		return mullvad.Server{}, err
+	}
+
+	var preferred, dead []mullvad.Server
+	for _, s := range servers {
+		if exclude[s.Hostname] {
+			continue
+		}
+		if h.stats == nil {
+			preferred = append(preferred, s)
+			continue
+		}
+		if health, ok := h.stats.PeekHealth(s.Hostname); !ok || health.Online {
+			preferred = append(preferred, s)
+		} else {
+			dead = append(dead, s)
+		}
+	}
+
+	pool := preferred
+	if len(pool) == 0 {
+		pool = dead
+	}
+	if len(pool) == 0 {
+		return mullvad.Server{}, fmt.Errorf("no servers match filter")
+	}
+	return pool[rand.IntN(len(pool))], nil
+}
+
+func (h *Handler) resolveWithDNS(ctx context.Context, r *http.Request, exclude map[string]bool) (resolvedAddr, remoteID string, err error) {
+	socksAddr, rid, err := h.resolveSOCKS5(ctx, r, exclude)
 	if err != nil {
 		return "", "", err
 	}
@@ -634,20 +688,22 @@ func (h *Handler) readBody(r *http.Request) ([]byte, error) {
 	return body, nil
 }
 
+// markRemoteUnhealthy records a request-level relay failure. Relay goes
+// offline after circuitBreakerStrikes consecutive failures; recovery happens
+// via the health checker.
+func (h *Handler) markRemoteUnhealthy(remoteID string) {
+	if h.stats == nil || remoteID == "" {
+		return
+	}
+	h.stats.RecordRemoteFailure(remoteID, circuitBreakerStrikes)
+}
+
 func (h *Handler) logAndRespond(w http.ResponseWriter, remoteID string, err error, markUnhealthy bool) {
 	h.logger.Error("proxy request failed", slog.String("error", err.Error()))
 	if h.stats != nil && remoteID != "" {
 		h.stats.RecordError(remoteID)
 		if markUnhealthy {
-			current := h.stats.GetRemoteStats(remoteID)
-			newFailures := current.Health.ConsecutiveFailures + 1
-			health := stats.RemoteHealth{
-				Online:               false,
-				ConsecutiveFailures:  newFailures,
-				ConsecutiveSuccesses: 0,
-				LastCheck:            time.Now(),
-			}
-			h.stats.SetRemoteHealth(remoteID, health)
+			h.markRemoteUnhealthy(remoteID)
 		}
 	}
 	http.Error(w, "failed to reach target", http.StatusBadGateway)
@@ -662,10 +718,27 @@ func isRetryable(err error) bool {
 	}
 	var netErr net.Error
 	if errors.As(err, &netErr) {
-		return netErr.Timeout() || netErr.Temporary()
+		return true
 	}
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 		return true
 	}
 	return false
+}
+
+// isRelayFailure reports whether err is attributed to the relay itself
+// (dial/connect to relay failed or relay dropped the connection), as opposed
+// to the target rejecting the connection.
+func isRelayFailure(err error) bool {
+	if err == nil {
+		return false
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) {
+		return true
+	}
+	if errors.Is(err, io.EOF) || errors.Is(err, io.ErrUnexpectedEOF) {
+		return true
+	}
+	return errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled)
 }
