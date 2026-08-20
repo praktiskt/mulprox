@@ -36,6 +36,7 @@ type Store interface {
 	SetRemoteHealth(remoteID string, health RemoteHealth)
 	RecordRemoteFailure(remoteID string, threshold int) bool
 	GetRemoteStats(remoteID string) *RemoteStats
+	GetRemoteInfo(remoteID string) (hostname, country, city, egressIP string)
 	GetAllRemoteStats() []*RemoteStats
 	GetAggregatedStats() AggregatedStats
 	PeekHealth(remoteID string) (RemoteHealth, bool)
@@ -316,7 +317,9 @@ apply:
 				stats.healthMu.Unlock()
 			}
 			if he {
+				stats.healthMu.Lock()
 				stats.EgressIP = ip
+				stats.healthMu.Unlock()
 			}
 			if hm {
 				stats.Hostname = hn
@@ -370,9 +373,21 @@ func (s *InMemoryStore) SetRemoteMetadata(remoteID, hostname, country, city stri
 
 func (s *InMemoryStore) SetRemoteMetadataSync(remoteID, hostname, country, city string) {
 	rs := s.RemoteStore.GetOrCreate(remoteID)
+	rs.healthMu.Lock()
 	rs.Hostname = hostname
 	rs.Country = country
 	rs.City = city
+	rs.healthMu.Unlock()
+}
+
+// GetRemoteInfo reads remote metadata + egress IP synchronously. Empty
+// hostname means the remote is unknown (e.g. direct:// upstream) and headers
+// should be omitted.
+func (s *InMemoryStore) GetRemoteInfo(remoteID string) (hostname, country, city, egressIP string) {
+	rs := s.RemoteStore.GetOrCreate(remoteID)
+	rs.healthMu.Lock()
+	defer rs.healthMu.Unlock()
+	return rs.Hostname, rs.Country, rs.City, rs.EgressIP
 }
 
 func (s *InMemoryStore) SetRemoteHealth(remoteID string, health RemoteHealth) {

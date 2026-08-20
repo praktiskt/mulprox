@@ -10,7 +10,9 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -428,6 +430,14 @@ func (d errorDialer) Dial(_, _ string) (net.Conn, error) {
 	return nil, d.err
 }
 
+// passthroughDialer dials the target directly, bypassing SOCKS5. Used to
+// exercise the HTTP proxy path against a real local server.
+type passthroughDialer struct{}
+
+func (passthroughDialer) Dial(network, addr string) (net.Conn, error) {
+	return net.Dial(network, addr)
+}
+
 // exclusionProvider serves a fixed relay list; GetFilteredServerWithHealth
 // honors the isOnline callback, relays get per-hostname dialers.
 type exclusionProvider struct {
@@ -704,6 +714,132 @@ func TestConnectPreHijackDNSFail(t *testing.T) {
 	status := readStatus(t, conn)
 	if !containsStatus(status, "502") {
 		t.Errorf("expected 502 Bad Gateway, got %q", status)
+	}
+}
+
+func TestHTTPProxyMulproxHeaders(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store := stats.NewInMemoryStore(logger)
+	store.Start()
+	defer store.Stop()
+
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte("ok"))
+	}))
+	defer target.Close()
+
+	p := &stubProvider{
+		relayAddr: "192.0.2.1:1080",
+		filterServer: mullvad.Server{
+			Hostname:  "test-relay",
+			Country:   "Sweden",
+			City:      "Stockholm",
+			SOCKS5:    "test",
+			SOCKSPort: 1080,
+		},
+		dialResults: []stubDialResult{{dialer: passthroughDialer{}}},
+	}
+	addr, closer := startTestProxyWithStore(t, p, store, "")
+	defer closer()
+
+	store.SetRemoteMetadataSync("test-relay", "test-relay", "Sweden", "Stockholm")
+	store.SetRemoteEgressIP("test-relay", "1.2.3.4")
+	time.Sleep(300 * time.Millisecond) // let stats flush egress IP
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	host := strings.TrimPrefix(target.URL, "http://")
+	req := fmt.Sprintf("GET %s/probe HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", target.URL, host)
+	if _, err := conn.Write([]byte(req)); err != nil {
+		t.Fatal(err)
+	}
+	resp, err := http.ReadResponse(bufio.NewReader(conn), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	io.Copy(io.Discard, resp.Body)
+
+	want := map[string]string{
+		"X-Mulprox-Egress-IP": "1.2.3.4",
+		"X-Mulprox-Relay":     "test-relay",
+		"X-Mulprox-Country":   "Sweden",
+		"X-Mulprox-City":      "Stockholm",
+	}
+	for k, v := range want {
+		if got := resp.Header.Get(k); got != v {
+			t.Errorf("%s: expected %q, got %q", k, v, got)
+		}
+	}
+}
+
+func TestConnectMulproxHeaders(t *testing.T) {
+	logger := slog.New(slog.NewTextHandler(io.Discard, nil))
+	store := stats.NewInMemoryStore(logger)
+	store.Start()
+	defer store.Stop()
+
+	p := &stubProvider{
+		relayAddr: "192.0.2.1:1080",
+		filterServer: mullvad.Server{
+			Hostname:  "test-relay",
+			Country:   "Sweden",
+			City:      "Stockholm",
+			SOCKS5:    "test",
+			SOCKSPort: 1080,
+		},
+		dialResults: []stubDialResult{{dialer: successDialer{}}},
+	}
+	addr, closer := startTestProxyWithStore(t, p, store, "")
+	defer closer()
+
+	store.SetRemoteMetadataSync("test-relay", "test-relay", "Sweden", "Stockholm")
+	store.SetRemoteEgressIP("test-relay", "1.2.3.4")
+	time.Sleep(300 * time.Millisecond) // let stats flush egress IP
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+	sendConnect(t, conn, "example.com:443")
+
+	conn.SetReadDeadline(time.Now().Add(3 * time.Second))
+	br := bufio.NewReader(conn)
+	status, err := br.ReadString('\n')
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !containsStatus(status, "200") {
+		t.Fatalf("expected 200, got %q", status)
+	}
+
+	hd := make(map[string]string)
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil || line == "\r\n" || line == "\n" {
+			break
+		}
+		parts := strings.SplitN(strings.TrimRight(line, "\r\n"), ":", 2)
+		if len(parts) == 2 {
+			hd[parts[0]] = strings.TrimSpace(parts[1])
+		}
+	}
+
+	want := map[string]string{
+		"X-Mulprox-Egress-IP": "1.2.3.4",
+		"X-Mulprox-Relay":     "test-relay",
+		"X-Mulprox-Country":   "Sweden",
+		"X-Mulprox-City":      "Stockholm",
+	}
+	for k, v := range want {
+		if got := hd[k]; got != v {
+			t.Errorf("%s: expected %q, got %q", k, v, got)
+		}
 	}
 }
 

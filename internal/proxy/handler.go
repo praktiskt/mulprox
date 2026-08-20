@@ -328,9 +328,51 @@ func (c *countingWriter) Flush() {
 	}
 }
 
+// mulproxHeaders builds X-Mulprox-* headers for a relay. Empty when the relay
+// is unknown (direct:// upstream, no metadata) or stats store is nil.
+func (h *Handler) mulproxHeaders(remoteID string) http.Header {
+	hd := make(http.Header)
+	if h.stats == nil || remoteID == "" {
+		return hd
+	}
+	hostname, country, city, egressIP := h.stats.GetRemoteInfo(remoteID)
+	if hostname == "" {
+		return hd
+	}
+	// Direct map assignment: preserves exact key spelling (X-Mulprox-Egress-IP)
+	// instead of http.CanonicalHeaderKey (which lowercases IP -> Ip).
+	hd["X-Mulprox-Relay"] = []string{remoteID}
+	if country != "" {
+		hd["X-Mulprox-Country"] = []string{country}
+	}
+	if city != "" {
+		hd["X-Mulprox-City"] = []string{city}
+	}
+	if egressIP != "" {
+		hd["X-Mulprox-Egress-IP"] = []string{egressIP}
+	}
+	return hd
+}
+
+// connectResponse renders the CONNECT 200 line plus X-Mulprox-* headers.
+func (h *Handler) connectResponse(remoteID string) []byte {
+	var buf bytes.Buffer
+	buf.WriteString("HTTP/1.1 200 Connection established\r\n")
+	for k, v := range h.mulproxHeaders(remoteID) {
+		for _, vv := range v {
+			buf.WriteString(k + ": " + vv + "\r\n")
+		}
+	}
+	buf.WriteString("\r\n")
+	return buf.Bytes()
+}
+
 // writeResponse copies upstream response to client, records stats.
 func (h *Handler) writeResponse(w http.ResponseWriter, resp *http.Response, remoteID string, sentBytes int64) {
 	for k, v := range resp.Header {
+		w.Header()[k] = v
+	}
+	for k, v := range h.mulproxHeaders(remoteID) {
 		w.Header()[k] = v
 	}
 
@@ -444,7 +486,7 @@ func (h *Handler) handleConnect(w http.ResponseWriter, r *http.Request) {
 		}
 		cancel()
 
-		if _, err := clientConn.Write([]byte("HTTP/1.1 200 Connection established\r\n\r\n")); err != nil {
+		if _, err := clientConn.Write(h.connectResponse(remoteID)); err != nil {
 			clientConn.Close()
 			targetConn.Close()
 			h.logger.Debug("client disconnected")
@@ -546,7 +588,7 @@ func (h *Handler) resolveSOCKS5(ctx context.Context, r *http.Request, exclude ma
 	server, err := h.mullvad.GetFilteredServerWithHealth(ctx, filter, isOnline)
 	if err == nil {
 		if h.stats != nil {
-			h.stats.SetRemoteMetadata(server.Hostname, server.Hostname, server.Country, server.City)
+			h.stats.SetRemoteMetadataSync(server.Hostname, server.Hostname, server.Country, server.City)
 		}
 		return fmt.Sprintf("%s:%d", server.SOCKS5, server.SOCKSPort), server.Hostname, nil
 	}
@@ -559,7 +601,7 @@ func (h *Handler) resolveSOCKS5(ctx context.Context, r *http.Request, exclude ma
 	}
 
 	if h.stats != nil {
-		h.stats.SetRemoteMetadata(server.Hostname, server.Hostname, server.Country, server.City)
+		h.stats.SetRemoteMetadataSync(server.Hostname, server.Hostname, server.Country, server.City)
 	}
 	return fmt.Sprintf("%s:%d", server.SOCKS5, server.SOCKSPort), server.Hostname, nil
 }
