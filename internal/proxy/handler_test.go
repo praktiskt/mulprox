@@ -143,6 +143,16 @@ func TestParseProxyAuth(t *testing.T) {
 			input:    "provider=Provider1,Provider2",
 			expected: ProxyAuth{Providers: []string{"Provider1", "Provider2"}},
 		},
+		{
+			name:     "relay hostname",
+			input:    "relay-hostname=se-sto-wg-209",
+			expected: ProxyAuth{Hostname: "se-sto-wg-209"},
+		},
+		{
+			name:     "relay hostname mixed with other keys",
+			input:    "country=Sweden,relay-hostname=se-sto-wg-209",
+			expected: ProxyAuth{Countries: []string{"Sweden"}, Hostname: "se-sto-wg-209"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -168,6 +178,9 @@ func TestParseProxyAuth(t *testing.T) {
 			}
 			if auth.Multihop != tt.expected.Multihop {
 				t.Errorf("multihop: expected %v, got %v", tt.expected.Multihop, auth.Multihop)
+			}
+			if auth.Hostname != tt.expected.Hostname {
+				t.Errorf("hostname: expected %q, got %q", tt.expected.Hostname, auth.Hostname)
 			}
 			if (auth.Owned == nil) != (tt.expected.Owned == nil) {
 				t.Errorf("owned: expected nil=%v, got nil=%v", tt.expected.Owned == nil, auth.Owned == nil)
@@ -240,6 +253,11 @@ func TestParseProxyAuthHeader(t *testing.T) {
 			input:    "Basic " + base64.StdEncoding.EncodeToString([]byte(":")),
 			expected: ProxyAuth{},
 		},
+		{
+			name:     "basic auth with relay hostname",
+			input:    "Basic " + base64.StdEncoding.EncodeToString([]byte("relay-hostname=se-sto-wg-209:")),
+			expected: ProxyAuth{Hostname: "se-sto-wg-209"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -265,6 +283,9 @@ func TestParseProxyAuthHeader(t *testing.T) {
 			}
 			if auth.Multihop != tt.expected.Multihop {
 				t.Errorf("multihop: expected %v, got %v", tt.expected.Multihop, auth.Multihop)
+			}
+			if auth.Hostname != tt.expected.Hostname {
+				t.Errorf("hostname: expected %q, got %q", tt.expected.Hostname, auth.Hostname)
 			}
 			if (auth.Owned == nil) != (tt.expected.Owned == nil) {
 				t.Errorf("owned: expected nil=%v, got nil=%v", tt.expected.Owned == nil, auth.Owned == nil)
@@ -310,6 +331,7 @@ func TestProxyAuthApply(t *testing.T) {
 		Providers: []string{"Mullvad"},
 		MinSpeed:  100,
 		Multihop:  true,
+		Hostname:  "se-sto-wg-209",
 	}
 
 	filter := mullvad.Filter{}
@@ -335,6 +357,9 @@ func TestProxyAuthApply(t *testing.T) {
 	}
 	if !filter.Multihop {
 		t.Error("expected multihop to be true")
+	}
+	if filter.Hostname != "se-sto-wg-209" {
+		t.Errorf("expected hostname se-sto-wg-209, got %q", filter.Hostname)
 	}
 }
 

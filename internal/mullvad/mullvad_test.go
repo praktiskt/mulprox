@@ -125,3 +125,47 @@ func TestGetFilteredServer(t *testing.T) {
 		t.Logf("combined -> %s (%s, %d Mbps)", s.City, s.Provider, s.Speed)
 	})
 }
+
+func TestFilterByRelayHostname(t *testing.T) {
+	var p Provider
+	servers := []Server{
+		{Hostname: "se-sto-wg-209", Country: "Sweden"},
+		{Hostname: "se-sto-wg-001", Country: "Sweden"},
+		{Hostname: "us-nyc-wg-102", Country: "United States"},
+	}
+
+	t.Run("exact match", func(t *testing.T) {
+		got := p.filterByFilter(servers, Filter{Hostname: "se-sto-wg-209"})
+		if len(got) != 1 || got[0].Hostname != "se-sto-wg-209" {
+			t.Errorf("expected only se-sto-wg-209, got %+v", got)
+		}
+	})
+
+	t.Run("case insensitive", func(t *testing.T) {
+		got := p.filterByFilter(servers, Filter{Hostname: "SE-STO-WG-209"})
+		if len(got) != 1 || got[0].Hostname != "se-sto-wg-209" {
+			t.Errorf("expected case-insensitive match, got %+v", got)
+		}
+	})
+
+	t.Run("no partial match", func(t *testing.T) {
+		got := p.filterByFilter(servers, Filter{Hostname: "se-sto-wg"})
+		if len(got) != 0 {
+			t.Errorf("prefix must not match, got %+v", got)
+		}
+	})
+
+	t.Run("no match", func(t *testing.T) {
+		got := p.filterByFilter(servers, Filter{Hostname: "de-fra-wg-001"})
+		if len(got) != 0 {
+			t.Errorf("expected no match, got %+v", got)
+		}
+	})
+
+	t.Run("empty hostname matches all", func(t *testing.T) {
+		got := p.filterByFilter(servers, Filter{})
+		if len(got) != 3 {
+			t.Errorf("expected all servers, got %d", len(got))
+		}
+	})
+}

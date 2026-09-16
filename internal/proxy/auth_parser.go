@@ -81,6 +81,8 @@ func ParseProxyAuth(connStr string) (*ProxyAuth, error) {
 				return nil, fmt.Errorf("invalid multihop value: %q", value)
 			}
 			auth.Multihop = b
+		case "relay-hostname":
+			auth.Hostname = value
 		default:
 			return nil, fmt.Errorf("unknown parameter: %q", key)
 		}

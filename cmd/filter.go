@@ -15,6 +15,7 @@ func buildBaseFilter() mullvad.Filter {
 		Providers: stringSliceFromViper("provider"),
 		MinSpeed:  viper.GetInt("speed"),
 		Multihop:  viper.GetBool("multihop"),
+		Hostname:  viper.GetString("relay-hostname"),
 	}
 	if viper.IsSet("owned") {
 		owned := viper.GetBool("owned")
@@ -38,4 +39,5 @@ func registerFilterFlags(cmd *cobra.Command) {
 	cmd.Flags().Int("speed", 0, "Minimum server speed in Mbps")
 	cmd.Flags().Bool("owned", false, "Only Mullvad-owned servers")
 	cmd.Flags().Bool("multihop", false, "Require multihop support")
+	cmd.Flags().String("relay-hostname", "", "Filter by exact relay hostname (e.g. se-sto-wg-209)")
 }

@@ -316,6 +316,7 @@ type Filter struct {
 	Providers []string `json:"provider,omitempty"`
 	MinSpeed  int      `json:"speed,omitempty"`
 	Multihop  bool     `json:"multihop,omitempty"`
+	Hostname  string   `json:"relay-hostname,omitempty"`
 }
 
 type ServerProvider interface {
@@ -411,7 +412,7 @@ func (p *Provider) GetFilteredServers(ctx context.Context, filter Filter) ([]Ser
 
 func (f Filter) isEmpty() bool {
 	return len(f.Countries) == 0 && len(f.Cities) == 0 && len(f.Providers) == 0 &&
-		f.Seed == 0 && f.Owned == nil && f.MinSpeed == 0 && !f.Multihop
+		f.Seed == 0 && f.Owned == nil && f.MinSpeed == 0 && !f.Multihop && f.Hostname == ""
 }
 
 func (f Filter) Clone() Filter {
@@ -423,6 +424,7 @@ func (f Filter) Clone() Filter {
 		Owned:     f.Owned,
 		MinSpeed:  f.MinSpeed,
 		Multihop:  f.Multihop,
+		Hostname:  f.Hostname,
 	}
 }
 
@@ -450,6 +452,9 @@ func (p *Provider) filterByFilter(servers []Server, filter Filter) []Server {
 			continue
 		}
 		if filter.Multihop && s.Multihop == 0 {
+			continue
+		}
+		if filter.Hostname != "" && !strings.EqualFold(filter.Hostname, s.Hostname) {
 			continue
 		}
 		filtered = append(filtered, s)

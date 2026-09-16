@@ -45,6 +45,7 @@ type ProxyAuth struct {
 	Providers []string `json:"provider,omitempty"`
 	MinSpeed  int      `json:"speed,omitempty"`
 	Multihop  bool     `json:"multihop,omitempty"`
+	Hostname  string   `json:"relay-hostname,omitempty"`
 }
 
 func (p *ProxyAuth) ApplyTo(filter *mullvad.Filter) {
@@ -68,6 +69,9 @@ func (p *ProxyAuth) ApplyTo(filter *mullvad.Filter) {
 	}
 	if p.Multihop {
 		filter.Multihop = p.Multihop
+	}
+	if p.Hostname != "" {
+		filter.Hostname = p.Hostname
 	}
 }
 

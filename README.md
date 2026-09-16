@@ -36,6 +36,7 @@ Put params in proxy URL userinfo. Random server if none given.
 | `provider` | `provider=M247` |
 | `speed` | `speed=1000` (Mbps min) |
 | `multihop` | `multihop=true` |
+| `relay-hostname` | `relay-hostname=se-sto-wg-209` (exact match) |
 
 Keys case-insensitive. Bools: `true/false`, `yes/no`, `1/0`. Empty password ignored.
 
@@ -90,6 +91,7 @@ debug: true
 | Env | |
 |-----|---|
 | `FAST_HEALTH_CHECK` | `true` -> probe servers at startup for fast online pick |
+| `RELAY_HOSTNAME` | exact relay hostname filter (e.g. `se-sto-wg-209`) |
 
 All flags bind to env via viper.
 
