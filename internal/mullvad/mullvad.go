@@ -1,6 +1,7 @@
 package mullvad
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"log/slog"
 	"math/rand/v2"
 	"net"
+	"net/http"
 	"sort"
 	"strings"
 	"sync"
@@ -25,8 +27,8 @@ const (
 	MullvadListURL      = "https://api.mullvad.net/www/relays/all/"
 	MullvadURL          = "https://am.i.mullvad.net/json"
 	MullvadListCacheTTL = 3 * time.Hour
-	DefaultDNSAddr      = "194.242.2.2:853"
-	DefaultDNSSNI       = "dns.mullvad.net"
+	DefaultDNSAddr      = "https://dns.quad9.net/dns-query"
+	DefaultDNSSNI       = "dns.quad9.net"
 )
 
 type Status struct {
@@ -61,6 +63,7 @@ type Provider struct {
 	fetchGroup    singleflight.Group
 	dnsAddr       string
 	dnsCache      dnsCache
+	dohClient     *http.Client
 }
 
 func New() *Provider {
@@ -75,7 +78,21 @@ func NewWithDNS(dnsAddr string) *Provider {
 		httpClient: client.NewSession("chrome-latest"),
 		dnsAddr:    dnsAddr,
 		dnsCache:   dnsCache{entries: make(map[string]*dnsCacheEntry)},
+		dohClient:  newDoHClient(),
 	}
+}
+
+func newDoHClient() *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	// Resolve relays directly. Inheriting HTTP_PROXY could route DoH through
+	// mulprox itself and recurse.
+	transport.Proxy = nil
+	transport.ForceAttemptHTTP2 = true
+	transport.MaxIdleConns = 8
+	transport.MaxIdleConnsPerHost = 2
+	transport.IdleConnTimeout = 90 * time.Second
+	transport.TLSHandshakeTimeout = 5 * time.Second
+	return &http.Client{Transport: transport, Timeout: 10 * time.Second}
 }
 
 func (p *Provider) SOCKS5DialerFromAddr(ctx context.Context, socksAddr string, timeout time.Duration) (proxy.Dialer, error) {
@@ -206,6 +223,90 @@ func (p *Provider) refreshDNSCache(ctx context.Context, logger *slog.Logger) {
 }
 
 func (p *Provider) resolve(ctx context.Context, hostname string) ([]net.IP, error) {
+	packed, err := packQuery(hostname)
+	if err != nil {
+		return nil, err
+	}
+
+	resolveCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+
+	var resp []byte
+	if strings.HasPrefix(p.dnsAddr, "https://") {
+		resp, err = p.resolveDoH(resolveCtx, packed)
+	} else {
+		resp, err = p.resolveDoT(resolveCtx, packed)
+	}
+	if err != nil {
+		return nil, err
+	}
+
+	return unpackResponse(resp, hostname)
+}
+
+func packQuery(hostname string) ([]byte, error) {
+	msg := dnsmessage.Message{
+		Header: dnsmessage.Header{
+			ID:               uint16(rand.IntN(65536)),
+			RecursionDesired: true,
+		},
+		Questions: []dnsmessage.Question{
+			{
+				Name:  dnsmessage.MustNewName(hostname + "."),
+				Type:  dnsmessage.TypeA,
+				Class: dnsmessage.ClassINET,
+			},
+		},
+	}
+
+	packed, err := msg.Pack()
+	if err != nil {
+		return nil, fmt.Errorf("dns pack: %w", err)
+	}
+	return packed, nil
+}
+
+func (p *Provider) resolveDoH(ctx context.Context, packed []byte) ([]byte, error) {
+	var lastErr error
+	for attempt := 0; attempt < 3; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, p.dnsAddr, bytes.NewReader(packed))
+		if err != nil {
+			return nil, fmt.Errorf("doh request: %w", err)
+		}
+		req.Header.Set("accept", "application/dns-message")
+		req.Header.Set("content-type", "application/dns-message")
+
+		resp, err := p.dohClient.Do(req)
+		if err != nil {
+			lastErr = err
+		} else {
+			body, readErr := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+			resp.Body.Close()
+			if readErr != nil {
+				lastErr = readErr
+			} else if resp.StatusCode != http.StatusOK {
+				lastErr = fmt.Errorf("doh status: %s", resp.Status)
+			} else {
+				return body, nil
+			}
+		}
+
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-time.After(100 * time.Millisecond):
+			}
+		}
+	}
+	return nil, fmt.Errorf("doh query: %w", lastErr)
+}
+
+func (p *Provider) resolveDoT(ctx context.Context, packed []byte) ([]byte, error) {
 	host, port, _ := net.SplitHostPort(p.dnsAddr)
 	if port == "" {
 		port = "53"
@@ -237,53 +338,37 @@ func (p *Provider) resolve(ctx context.Context, hostname string) ([]net.IP, erro
 		conn = tlsConn
 	}
 
-	msg := dnsmessage.Message{
-		Header: dnsmessage.Header{
-			ID:               uint16(rand.IntN(65536)),
-			RecursionDesired: true,
-		},
-		Questions: []dnsmessage.Question{
-			{
-				Name:  dnsmessage.MustNewName(hostname + "."),
-				Type:  dnsmessage.TypeA,
-				Class: dnsmessage.ClassINET,
-			},
-		},
-	}
-
-	packed, err := msg.Pack()
-	if err != nil {
-		return nil, fmt.Errorf("dns pack: %w", err)
-	}
-
+	query := packed
 	if useDoT {
-		packed = append([]byte{byte(len(packed) >> 8), byte(len(packed))}, packed...)
+		query = append([]byte{byte(len(packed) >> 8), byte(len(packed))}, packed...)
 	}
 
-	if _, err := conn.Write(packed); err != nil {
+	if _, err := conn.Write(query); err != nil {
 		return nil, fmt.Errorf("dns write: %w", err)
 	}
 
-	var resp []byte
 	if useDoT {
 		lenBuf := make([]byte, 2)
 		if _, err := io.ReadFull(conn, lenBuf); err != nil {
 			return nil, fmt.Errorf("dns read len: %w", err)
 		}
 		rlen := int(lenBuf[0])<<8 | int(lenBuf[1])
-		resp = make([]byte, rlen)
+		resp := make([]byte, rlen)
 		if _, err := io.ReadFull(conn, resp); err != nil {
 			return nil, fmt.Errorf("dns read: %w", err)
 		}
-	} else {
-		buf := make([]byte, 1500)
-		n, err := conn.Read(buf)
-		if err != nil {
-			return nil, fmt.Errorf("dns read: %w", err)
-		}
-		resp = buf[:n]
+		return resp, nil
 	}
 
+	buf := make([]byte, 1500)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return nil, fmt.Errorf("dns read: %w", err)
+	}
+	return buf[:n], nil
+}
+
+func unpackResponse(resp []byte, hostname string) ([]net.IP, error) {
 	var pkt dnsmessage.Message
 	if err := pkt.Unpack(resp); err != nil {
 		return nil, fmt.Errorf("dns unpack: %w", err)

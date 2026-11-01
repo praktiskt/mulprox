@@ -161,7 +161,7 @@ func init() {
 	serveCmd.Flags().Bool("https-only", false, "Reject HTTP requests, only allow HTTPS")
 	serveCmd.Flags().Int("socks5-port", 0, "SOCKS5 server port (0 = disabled)")
 	serveCmd.Flags().String("upstream-socks5", "", "Upstream SOCKS5 proxy address for chaining (also SOCKS5_PROXY env)")
-	serveCmd.Flags().String("dns", "", "DNS server for Mullvad relay resolution (default: 194.242.2.2:853, Mullvad DoT)")
+	serveCmd.Flags().String("dns", "", "DNS resolver for Mullvad relay resolution (default: https://dns.quad9.net/dns-query; host:port uses DoT)")
 	registerFilterFlags(serveCmd)
 	rootCmd.AddCommand(serveCmd)
 }
